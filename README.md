@@ -41,6 +41,15 @@ Ort::ThrowOnError(Ort::GetApi().SessionOptionsAppendExecutionProvider_V2(
 - General usage guide: `docs/USER_GUIDE.md`
 - Contributing guide: `CONTRIBUTING.md`
 
+## Contributing
+
+Contributions are welcome through pull requests.
+
+- Open a branch from `main` and submit changes via PR.
+- Keep PRs scoped and include validation evidence.
+- Code owner review is required before merge.
+- Follow the full contribution workflow in `CONTRIBUTING.md`.
+
 ## Current Capability Snapshot
 
 This is an active scaffold with concrete runtime paths, not a fully broad operator backend yet.
