@@ -1,99 +1,98 @@
-# ONNX Runtime Telum Plugin Execution Provider (Standalone)
+# ONNX Runtime Telum Plugin Execution Provider
 
-This repository contains a standalone ONNX Runtime **plugin Execution Provider (EP)** shared library for IBM Telum
-(s390x). It is intended to be built and packaged outside of the ONNX Runtime repository, and loaded at runtime via the
-ONNX Runtime plugin EP API.
+Standalone plugin Execution Provider (EP) for ONNX Runtime targeting IBM Telum workflows.
 
-If distributed as a Python package, the recommended package name format is:
-- `onnxruntime-ep-<ep-identifier>` (this repo uses `onnxruntime-ep-telum`).
+This repository builds a shared library that is loaded at runtime through ONNX Runtime's plugin EP API. It is
+maintained outside the main ONNX Runtime repository so the EP can evolve on its own cadence.
 
-## Build
+## Quick Start
 
-Prerequisites:
-- CMake (>= 3.20)
-- A C++17 compiler
-- ONNX Runtime public headers (must include `onnxruntime_cxx_api.h` and `onnxruntime_ep_c_api.h`)
-
-Configure and build:
+Build:
 
 ```bash
-cmake -S . -B build \
-  -DONNXRUNTIME_INCLUDE_DIR=/path/to/onnxruntime/include/onnxruntime/core/session
-cmake --build build -j
+make build
 ```
 
-Notes:
-- This library does **not** ship the ONNX Runtime shared library. ORT must be provided by the consuming application.
-- On Linux s390x, the build enables an optional zDNN-backed path (dynamic `dlopen("libzdnn.so")`) by default.
-  You can disable it with `-DTELUM_EP_ENABLE_ZDNN=OFF`.
-
-## Runtime Usage (C++)
-
-Register the plugin EP library:
+Register and append the EP in your C++ host:
 
 ```cpp
 Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "app"};
-env.RegisterExecutionProviderLibrary(library_path, ORT_TSTR("TelumPluginExecutionProvider"));
-```
+Ort::ThrowOnError(env.RegisterExecutionProviderLibrary(
+    library_path, ORT_TSTR("TelumPluginExecutionProvider")));
 
-Then append the EP:
-
-```cpp
 Ort::SessionOptions so;
 Ort::ThrowOnError(Ort::GetApi().SessionOptionsAppendExecutionProvider_V2(
     so, "TelumPluginExecutionProvider", /*provider_options=*/nullptr));
 ```
 
-Exact APIs and calling patterns are described in the ONNX Runtime plugin EP documentation.
+`library_path` should point to the built plugin shared library (`telum_plugin_ep`).
 
-## Repo Layout
+## Documentation
 
-- `src/plugin_ep_utils.h`: helper utilities (adapted from ONNX Runtime plugin EP samples)
-- `src/telum_plugin_ep/*`: Telum plugin EP implementation and entrypoints
-- `python/onnxruntime_ep_telum/*`: optional Python helpers:
-  - `get_library_path()`, `get_ep_names()`, `get_ep_name()`
+- Install guide: `docs/INSTALL.md`
+- General usage guide: `docs/USER_GUIDE.md`
+- Contributing guide: `CONTRIBUTING.md`
 
-## CI
+## Current Capability Snapshot
 
-This repo includes GitHub Actions PR CI in `.github/workflows/pr-ci.yml`:
+This is an active scaffold with concrete runtime paths, not a fully broad operator backend yet.
 
-- `packaging-sanity`: builds the Python source distribution.
-- `linux-smoke-build`: configures/builds the plugin on `ubuntu-latest` with `TELUM_EP_ENABLE_ZDNN=OFF`.
-- `s390x-full-build`: full build on `[self-hosted, linux, s390x]`, gated by default.
+- EP registration name: `TelumPluginExecutionProvider`
+- Supported graph patterns:
+  - `Mul` (`float32`, static equal-shape inputs)
+  - `EPContext` nodes for compiled-model loading paths
+  - sample custom-op flow (`Custom_Mul` in `test` domain)
+- Backends:
+  - `stub` (default)
+  - optional `zdnn` runtime path on Linux s390x
 
-The s390x job only runs when both conditions are met:
-- Repository variable `ENABLE_S390X_FULL_BUILD` is set to `true`.
-- Trigger is explicit:
-  - PR labeled `ci/s390x-full`, or
-  - Manual `workflow_dispatch` run with `run_s390x=true`.
+## Build Notes
 
-## Make Targets
+- Requires ONNX Runtime public headers (`onnxruntime_cxx_api.h`, `onnxruntime_ep_c_api.h`)
+- Requires CMake `>= 3.20` and C++17 compiler
+- By default, `make build` fetches ONNX Runtime headers into `.ort`
+- zDNN compile switch: `TELUM_EP_ENABLE_ZDNN=ON|OFF`
 
-A starter `Makefile` is included:
+## Runtime Configuration
 
-- `make build`: fetch ORT headers (into `.ort`), configure, and build.
-- `make python-sdist`: build Python source distribution in `dist/`.
-- `make ci-local`: run local equivalents of baseline CI jobs.
-- `make branch-protection`: apply branch protection for `main` via `gh`.
+Configuration is provided through `OrtSessionOptions` config entries.
 
-## Governance
+Preferred key style:
 
-- Contribution guide: `CONTRIBUTING.md`
-- Code owners: `.github/CODEOWNERS` (`@k8ika0s`)
-- Issue forms:
-  - `.github/ISSUE_TEMPLATE/bug_report.yml`
-  - `.github/ISSUE_TEMPLATE/feature_request.yml`
-- Branch protection payload:
-  - `.github/branch-protection/main.json`
+- `ep.<registration_name>.<key>`
 
-## Release / Publish
+Examples for registration name `TelumPluginExecutionProvider`:
 
-Release workflows are prepared and gated by repository variables:
+- `ep.TelumPluginExecutionProvider.backend` = `stub|zdnn`
+- `ep.TelumPluginExecutionProvider.stub_support_mul` = boolean token
+- `ep.TelumPluginExecutionProvider.drop_constant_initializers` = boolean token
+- `ep.context_enable` = `0|1`
 
-- PyPI: `.github/workflows/release-pypi.yml`
-  - Build job always creates an `sdist` artifact.
-  - Publish is gated by `ENABLE_PYPI_PUBLISH == true`.
-  - Manual dispatch supports TestPyPI and PyPI.
-- NuGet: `.github/workflows/release-nuget.yml`
-  - Pack job always creates `.nupkg` artifacts from `packaging/nuget/onnxruntime-ep-telum.nuspec`.
-  - Publish is gated by `ENABLE_NUGET_PUBLISH == true` and requires `NUGET_API_KEY`.
+Legacy aliases (`telum.backend`, `telum.stub_support_mul`, `telum.drop_constant_initializers`) are still accepted.
+
+## Python Packaging Helpers
+
+The Python package `onnxruntime_ep_telum` provides convenience helpers:
+
+- `get_ep_name()`
+- `get_ep_names()`
+- `get_library_path()`
+
+These helpers expose EP metadata/library path; host-side ONNX Runtime APIs still perform the actual plugin registration.
+
+## CI and Release
+
+- PR CI workflow: `.github/workflows/pr-ci.yml`
+- PyPI release workflow: `.github/workflows/release-pypi.yml`
+- NuGet release workflow: `.github/workflows/release-nuget.yml`
+
+## Repository Layout
+
+- `src/telum_plugin_ep/`: plugin EP implementation
+- `src/plugin_ep_utils.h`: shared helper utilities
+- `python/onnxruntime_ep_telum/`: Python helper package and library staging path
+- `packaging/nuget/`: NuGet package spec
+
+## License
+
+Apache-2.0. See `LICENSE`.
