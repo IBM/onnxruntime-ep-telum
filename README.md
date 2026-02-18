@@ -52,3 +52,17 @@ Exact APIs and calling patterns are described in the ONNX Runtime plugin EP docu
 - `src/telum_plugin_ep/*`: Telum plugin EP implementation and entrypoints
 - `python/onnxruntime_ep_telum/*`: optional Python helpers:
   - `get_library_path()`, `get_ep_names()`, `get_ep_name()`
+
+## CI
+
+This repo includes GitHub Actions PR CI in `.github/workflows/pr-ci.yml`:
+
+- `packaging-sanity`: builds the Python source distribution.
+- `linux-smoke-build`: configures/builds the plugin on `ubuntu-latest` with `TELUM_EP_ENABLE_ZDNN=OFF`.
+- `s390x-full-build`: full build on `[self-hosted, linux, s390x]`, gated by default.
+
+The s390x job only runs when both conditions are met:
+- Repository variable `ENABLE_S390X_FULL_BUILD` is set to `true`.
+- Trigger is explicit:
+  - PR labeled `ci/s390x-full`, or
+  - Manual `workflow_dispatch` run with `run_s390x=true`.
