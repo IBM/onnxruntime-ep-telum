@@ -66,3 +66,34 @@ The s390x job only runs when both conditions are met:
 - Trigger is explicit:
   - PR labeled `ci/s390x-full`, or
   - Manual `workflow_dispatch` run with `run_s390x=true`.
+
+## Make Targets
+
+A starter `Makefile` is included:
+
+- `make build`: fetch ORT headers (into `.ort`), configure, and build.
+- `make python-sdist`: build Python source distribution in `dist/`.
+- `make ci-local`: run local equivalents of baseline CI jobs.
+- `make branch-protection`: apply branch protection for `main` via `gh`.
+
+## Governance
+
+- Contribution guide: `CONTRIBUTING.md`
+- Code owners: `.github/CODEOWNERS` (`@k8ika0s`)
+- Issue forms:
+  - `.github/ISSUE_TEMPLATE/bug_report.yml`
+  - `.github/ISSUE_TEMPLATE/feature_request.yml`
+- Branch protection payload:
+  - `.github/branch-protection/main.json`
+
+## Release / Publish
+
+Release workflows are prepared and gated by repository variables:
+
+- PyPI: `.github/workflows/release-pypi.yml`
+  - Build job always creates an `sdist` artifact.
+  - Publish is gated by `ENABLE_PYPI_PUBLISH == true`.
+  - Manual dispatch supports TestPyPI and PyPI.
+- NuGet: `.github/workflows/release-nuget.yml`
+  - Pack job always creates `.nupkg` artifacts from `packaging/nuget/onnxruntime-ep-telum.nuspec`.
+  - Publish is gated by `ENABLE_NUGET_PUBLISH == true` and requires `NUGET_API_KEY`.

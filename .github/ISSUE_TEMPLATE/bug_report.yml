@@ -1,0 +1,89 @@
+name: Bug report
+description: Report a reproducible defect in the Telum plugin EP build, runtime, or packaging.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+      placeholder: A short description of the failure.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Affected area
+      options:
+        - Build/configure
+        - Runtime execution
+        - Operator coverage / partitioning
+        - Python packaging
+        - CI/CD
+        - Documentation
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit or tag
+      description: Repo commit SHA or release tag where the bug was observed.
+      placeholder: a7868a5 or v0.1.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include architecture, OS, compiler, CMake, and ORT version.
+      placeholder: |
+        arch: s390x
+        os: RHEL 9.4
+        compiler: gcc 13.x
+        cmake: 3.28.x
+        onnxruntime: 1.20.x
+        zDNN enabled: true/false
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Commands and minimal model/input details to reproduce.
+      placeholder: |
+        1) cmake -S . -B build -DONNXRUNTIME_INCLUDE_DIR=...
+        2) cmake --build build -j
+        3) run model ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: What happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and traces
+      description: Paste relevant logs, stack traces, or CI links.
+      render: shell
+    validations:
+      required: false

@@ -1,0 +1,52 @@
+name: Feature request
+description: Propose a new capability or improvement for the Telum plugin EP.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What user/problem scenario is not served today?
+      placeholder: Describe the gap and why it matters.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the expected behavior, API, or workflow.
+      placeholder: Describe your proposed change.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and impact
+      description: Mention affected operators, graph partitioning, runtime behavior, or packaging.
+      placeholder: Include expected performance/compatibility impact if known.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other options you evaluated.
+      placeholder: List alternatives and why they are less suitable.
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How do we know this is complete?
+      placeholder: |
+        - [ ] Criteria 1
+        - [ ] Criteria 2
+    validations:
+      required: true
