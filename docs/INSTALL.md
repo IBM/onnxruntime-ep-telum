@@ -2,6 +2,14 @@
 
 This guide covers building and staging the Telum plugin EP from source.
 
+## No ONNX Runtime Rebuild Required
+
+Using this plugin does not require rebuilding ONNX Runtime itself.
+
+- ONNX Runtime stays as your base runtime.
+- The Telum EP is built/distributed as a separate shared library.
+- Your host application loads that shared library at runtime.
+
 ## What You Install
 
 The primary deliverable is a shared library named `telum_plugin_ep`:
@@ -105,6 +113,17 @@ If you want the Python package to carry the built plugin library, place the shar
 - `python/onnxruntime_ep_telum/lib/`
 
 before packaging.
+
+## Helper API Locations
+
+If you distribute through package managers, helper APIs are provided here:
+
+- PyPI helpers:
+  - `python/onnxruntime_ep_telum/__init__.py`
+  - `get_ep_name()`, `get_ep_names()`, `get_library_path()`
+- NuGet helpers:
+  - `packaging/nuget/src/OnnxRuntimeEpTelum/PluginEpHelpers.cs`
+  - `PluginEpHelpers.GetEpName()`, `PluginEpHelpers.GetEpNames()`, `PluginEpHelpers.GetLibraryPath()`
 
 ## Troubleshooting
 

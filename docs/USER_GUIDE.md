@@ -10,6 +10,14 @@ The repository provides a standalone ONNX Runtime plugin EP shared library.
 - Primary integration API: plugin EP runtime registration
 - Current scaffold focus: `Mul` execution path and EPContext support
 
+## No ONNX Runtime Rebuild Required
+
+You do not rebuild ONNX Runtime to use this plugin.
+
+- Keep your existing ONNX Runtime binary/package.
+- Build or download this plugin shared library separately.
+- Load/register the plugin at runtime from your host application.
+
 ## Runtime Integration (C++)
 
 Register the plugin library, then append the EP:
@@ -140,15 +148,33 @@ Unsupported nodes remain on other execution providers.
 - On Linux s390x, the implementation dynamically loads `libzdnn.so`
 - If zDNN cannot be loaded or NNPA MUL capability is unavailable, backend capability is rejected
 
-## Python Package Helper APIs
+## Distribution Helper APIs
 
-The Python module provides helper utilities:
+### PyPI helper APIs
+
+Defined in:
+
+- `python/onnxruntime_ep_telum/__init__.py`
+
+Helpers:
 
 - `get_ep_name()`
 - `get_ep_names()`
 - `get_library_path()`
 
-These helpers locate metadata and plugin library paths. Runtime EP registration still depends on host ONNX Runtime APIs.
+### NuGet helper APIs
+
+Defined in:
+
+- `packaging/nuget/src/OnnxRuntimeEpTelum/PluginEpHelpers.cs`
+
+Helpers:
+
+- `PluginEpHelpers.GetEpName()`
+- `PluginEpHelpers.GetEpNames()`
+- `PluginEpHelpers.GetLibraryPath()`
+
+These helpers resolve EP name(s) and plugin-library path. Your host still performs the actual runtime registration.
 
 ## Profiling and Diagnostics
 

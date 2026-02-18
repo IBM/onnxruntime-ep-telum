@@ -5,6 +5,8 @@ Standalone plugin Execution Provider (EP) for ONNX Runtime targeting IBM Telum w
 This repository builds a shared library that is loaded at runtime through ONNX Runtime's plugin EP API. It is
 maintained outside the main ONNX Runtime repository so the EP can evolve on its own cadence.
 
+No ONNX Runtime rebuild is required: keep your existing ORT runtime and load this plugin library at runtime.
+
 ## Quick Start
 
 Build:
