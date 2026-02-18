@@ -7,6 +7,12 @@ maintained outside the main ONNX Runtime repository so the EP can evolve on its 
 
 No ONNX Runtime rebuild is required: keep your existing ORT runtime and load this plugin library at runtime.
 
+## ONNX Runtime Version Compatibility
+
+- Plugin EP architecture first appears in ONNX Runtime `1.23.0`.
+- This repository currently uses plugin EP APIs introduced in ONNX Runtime API version `1.24`.
+- Effective minimum supported released base runtime for this codebase: ONNX Runtime `1.24.1+`.
+
 ## Quick Start
 
 Build:

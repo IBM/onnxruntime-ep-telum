@@ -18,6 +18,12 @@ You do not rebuild ONNX Runtime to use this plugin.
 - Build or download this plugin shared library separately.
 - Load/register the plugin at runtime from your host application.
 
+## ONNX Runtime Version Baseline
+
+- Plugin EP architecture begins in ONNX Runtime `1.23.0`.
+- This repository relies on plugin EP APIs marked `since 1.24`.
+- Recommended minimum runtime/header version for this repo: ONNX Runtime `1.24.1+`.
+
 ## Runtime Integration (C++)
 
 Register the plugin library, then append the EP:

@@ -28,11 +28,18 @@ You register this library at runtime with ONNX Runtime's plugin EP API.
 - ONNX Runtime public headers containing:
   - `onnxruntime_cxx_api.h`
   - `onnxruntime_ep_c_api.h`
+  - version baseline: ONNX Runtime `1.24.1+`
 
 Optional:
 
 - `ninja` generator
 - Linux s390x + `libzdnn.so` when using the `zdnn` backend path
+
+## Version Baseline
+
+- Plugin EP support starts in ONNX Runtime `1.23.0`.
+- This repository uses APIs introduced in EP API version `1.24`.
+- Use ONNX Runtime `1.24.1+` headers/runtime with this project.
 
 ## Option A: Build With Makefile (Recommended)
 
