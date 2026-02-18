@@ -63,6 +63,43 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
+  s390x-qemu-build:
+    name: CMake s390x build (QEMU, compile-only)
+    runs-on: ubuntu-latest
+    env:
+      ORT_REPO: https://github.com/microsoft/onnxruntime.git
+      ORT_REF: main
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable QEMU (s390x)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: s390x
+
+      - name: Build in linux/s390x container (compile-only)
+        run: |
+          docker run --rm --platform linux/s390x \
+            -e ORT_REF \
+            -e ORT_REPO \
+            -v "${GITHUB_WORKSPACE}:/work:ro" \
+            ubuntu:24.04 \
+            bash -lc '
+              set -euo pipefail
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates cmake ninja-build g++ git
+
+              git clone --depth 1 --branch "${ORT_REF}" "${ORT_REPO}" /tmp/.ort
+
+              cmake -S /work -B /tmp/build -G Ninja \
+                -DONNXRUNTIME_INCLUDE_DIR=/tmp/.ort/include/onnxruntime/core/session \
+                -DTELUM_EP_ENABLE_ZDNN=ON
+
+              cmake --build /tmp/build --parallel
+            '
+
   s390x-full-build:
     name: Full build (self-hosted s390x, gated)
     runs-on: [self-hosted, linux, s390x]

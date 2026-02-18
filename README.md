@@ -91,6 +91,8 @@ These helpers expose EP metadata/library path; host-side ONNX Runtime APIs still
 ## CI and Release
 
 - PR CI workflow: `.github/workflows/pr-ci.yml`
+  - Includes `packaging-sanity`, `linux-smoke-build`, and `s390x-qemu-build` (compile-only).
+  - Keeps `s390x-full-build` gated to self-hosted runner flow.
 - PyPI release workflow: `.github/workflows/release-pypi.yml`
 - NuGet release workflow: `.github/workflows/release-nuget.yml`
 
