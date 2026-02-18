@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List
 
 
-_EP_NAME = "telum"
+_EP_NAME = "TelumPluginExecutionProvider"
 
 
 def get_ep_name() -> str:
@@ -91,4 +91,3 @@ def _debug_dump_paths() -> str:
         for c in sorted(p.iterdir()):
             entries.append(f"  - {c.name}")
     return os.linesep.join(entries)
-

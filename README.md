@@ -33,7 +33,7 @@ Register the plugin EP library:
 
 ```cpp
 Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "app"};
-env.RegisterExecutionProviderLibrary(library_path, ORT_TSTR("telum"));
+env.RegisterExecutionProviderLibrary(library_path, ORT_TSTR("TelumPluginExecutionProvider"));
 ```
 
 Then append the EP:
@@ -41,7 +41,7 @@ Then append the EP:
 ```cpp
 Ort::SessionOptions so;
 Ort::ThrowOnError(Ort::GetApi().SessionOptionsAppendExecutionProvider_V2(
-    so, "telum", /*provider_options=*/nullptr));
+    so, "TelumPluginExecutionProvider", /*provider_options=*/nullptr));
 ```
 
 Exact APIs and calling patterns are described in the ONNX Runtime plugin EP documentation.
