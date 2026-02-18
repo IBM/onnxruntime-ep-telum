@@ -26,6 +26,62 @@ Ort::ThrowOnError(Ort::GetApi().SessionOptionsAppendExecutionProvider_V2(
 
 `library_path` must point to the built `telum_plugin_ep` shared library.
 
+## Where This Code Goes
+
+The registration/append code belongs in your host application, not in this plugin repository.
+
+Typical placement in your app:
+
+- Startup/bootstrap code creates `Ort::Env` once for process lifetime.
+- Session-construction code creates `Ort::SessionOptions`.
+- In that same session-construction path:
+  - register the plugin library on the `Ort::Env`
+  - append `TelumPluginExecutionProvider` to `Ort::SessionOptions`
+  - create `Ort::Session`
+
+Call order requirement:
+
+1. Create `Ort::Env`
+2. Register plugin library on `Ort::Env`
+3. Configure and append EP on `Ort::SessionOptions`
+4. Create `Ort::Session`
+
+### Example Host-Side Placement
+
+Example file in your app: `src/inference/session_factory.cc`
+
+```cpp
+#include <onnxruntime_cxx_api.h>
+
+#include <memory>
+#include <string>
+
+struct OrtRuntimeContext {
+  Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "my-app"};
+  bool telum_registered{false};
+};
+
+std::unique_ptr<Ort::Session> CreateSessionWithTelum(
+    OrtRuntimeContext& ctx,
+    const std::string& model_path,
+    const std::string& telum_library_path) {
+  if (!ctx.telum_registered) {
+    Ort::ThrowOnError(ctx.env.RegisterExecutionProviderLibrary(
+        telum_library_path.c_str(), ORT_TSTR("TelumPluginExecutionProvider")));
+    ctx.telum_registered = true;
+  }
+
+  Ort::SessionOptions so;
+  so.SetConfigEntry("ep.TelumPluginExecutionProvider.backend", "stub");
+  Ort::ThrowOnError(Ort::GetApi().SessionOptionsAppendExecutionProvider_V2(
+      so, "TelumPluginExecutionProvider", nullptr));
+
+  return std::make_unique<Ort::Session>(ctx.env, model_path.c_str(), so);
+}
+```
+
+If you build sessions in multiple places, centralize this in one helper/factory and reuse it.
+
 ## Runtime Configuration Keys
 
 Set these in `OrtSessionOptions` config entries before creating the session.

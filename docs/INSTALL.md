@@ -75,6 +75,23 @@ Copy the built shared library to a location your application can read, then regi
 
 See `docs/USER_GUIDE.md` for full runtime usage.
 
+### Where to Put the Built Library
+
+The library should be staged with your host application artifacts. A common layout is:
+
+```text
+my-app/
+  bin/my_app
+  models/model.onnx
+  plugins/libtelum_plugin_ep.so
+```
+
+Then your app can resolve and pass:
+
+- `/absolute/path/to/my-app/plugins/libtelum_plugin_ep.so`
+
+into `RegisterExecutionProviderLibrary(...)` during startup/session setup.
+
 ## Optional: Build Python Source Package
 
 Build sdist:
