@@ -1,0 +1,2 @@
+recursive-include python/onnxruntime_ep_telum/lib *
+

@@ -1,0 +1,107 @@
+name: Release NuGet
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version (defaults to release tag or pyproject version)"
+        required: false
+        type: string
+      publish:
+        description: "Publish package to NuGet.org"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-nuget-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pack:
+    name: Build NuGet package
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup NuGet CLI
+        uses: NuGet/setup-nuget@v2
+
+      - name: Resolve package version
+        id: version
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            version="${{ github.event.release.tag_name }}"
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            version="${{ inputs.version }}"
+          else
+            version="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -n 1)"
+          fi
+
+          version="${version#v}"
+          if [[ -z "${version}" ]]; then
+            echo "::error::Unable to determine package version."
+            exit 1
+          fi
+          echo "value=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Pack nupkg
+        run: |
+          nuget pack packaging/nuget/onnxruntime-ep-telum.nuspec \
+            -Version "${{ steps.version.outputs.value }}" \
+            -Properties "branch=${GITHUB_REF_NAME};commit=${GITHUB_SHA}" \
+            -OutputDirectory dist/nuget
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: dist/nuget/*.nupkg
+
+  publish:
+    name: Publish to NuGet.org (gated)
+    needs: pack
+    runs-on: ubuntu-latest
+    if: |
+      vars.ENABLE_NUGET_PUBLISH == 'true' &&
+      (
+        github.event_name == 'release' ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish == true
+        )
+      )
+    environment: nuget
+    steps:
+      - name: Setup NuGet CLI
+        uses: NuGet/setup-nuget@v2
+
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nuget-package
+          path: dist/nuget
+
+      - name: Publish package
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [[ -z "${NUGET_API_KEY}" ]]; then
+            echo "::error::Missing NUGET_API_KEY secret."
+            exit 1
+          fi
+          nuget push dist/nuget/*.nupkg \
+            -ApiKey "${NUGET_API_KEY}" \
+            -Source "https://api.nuget.org/v3/index.json" \
+            -SkipDuplicate

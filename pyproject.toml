@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onnxruntime-ep-telum"
+version = "0.1.0"
+description = "ONNX Runtime plugin Execution Provider (EP) shared library for IBM Telum (s390x)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "Apache-2.0"
+authors = [
+  {name = "IBM"},
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: C++",
+  "Operating System :: POSIX :: Linux",
+]
+
+# Per ORT guidance, do not force a hard dependency on onnxruntime here.
+# Consumers bring their own ORT (Python/C++), and register this plugin library at runtime.
+dependencies = []
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+packages = ["onnxruntime_ep_telum"]
+
+[tool.setuptools.package-data]
+onnxruntime_ep_telum = ["lib/*"]
