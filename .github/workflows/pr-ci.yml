@@ -1,0 +1,143 @@
+name: PR CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_s390x:
+        description: "Run gated s390x full build"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: pr-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  packaging-sanity:
+    name: Packaging sanity (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build source distribution
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --sdist
+
+  linux-smoke-build:
+    name: CMake smoke build (Ubuntu)
+    runs-on: ubuntu-latest
+    env:
+      ORT_REPO: https://github.com/microsoft/onnxruntime.git
+      ORT_REF: main
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build g++ git
+
+      - name: Fetch ONNX Runtime public headers
+        run: |
+          git clone --depth 1 --branch "${ORT_REF}" "${ORT_REPO}" .ort
+
+      - name: Configure (zDNN disabled for non-s390x smoke build)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DONNXRUNTIME_INCLUDE_DIR="${GITHUB_WORKSPACE}/.ort/include/onnxruntime/core/session" \
+            -DTELUM_EP_ENABLE_ZDNN=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+  s390x-qemu-build:
+    name: CMake s390x build (QEMU, compile-only)
+    runs-on: ubuntu-latest
+    env:
+      ORT_REPO: https://github.com/microsoft/onnxruntime.git
+      ORT_REF: main
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable QEMU (s390x)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: s390x
+
+      - name: Build in linux/s390x container (compile-only)
+        run: |
+          docker run --rm --platform linux/s390x \
+            -e ORT_REF \
+            -e ORT_REPO \
+            -v "${GITHUB_WORKSPACE}:/work:ro" \
+            ubuntu:24.04 \
+            bash -lc '
+              set -euo pipefail
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates cmake ninja-build g++ git
+
+              git clone --depth 1 --branch "${ORT_REF}" "${ORT_REPO}" /tmp/.ort
+
+              cmake -S /work -B /tmp/build -G Ninja \
+                -DONNXRUNTIME_INCLUDE_DIR=/tmp/.ort/include/onnxruntime/core/session \
+                -DTELUM_EP_ENABLE_ZDNN=ON
+
+              cmake --build /tmp/build --parallel
+            '
+
+  s390x-full-build:
+    name: Full build (self-hosted s390x, gated)
+    runs-on: [self-hosted, linux, s390x]
+    if: |
+      vars.ENABLE_S390X_FULL_BUILD == 'true' &&
+      (
+        (github.event_name == 'workflow_dispatch' && inputs.run_s390x == true) ||
+        (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci/s390x-full'))
+      )
+    env:
+      ORT_REPO: https://github.com/microsoft/onnxruntime.git
+      ORT_REF: main
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure required tools are present on runner
+        run: |
+          missing=0
+          for cmd in cmake c++ git; do
+            if ! command -v "${cmd}" >/dev/null 2>&1; then
+              echo "::error::Missing required command on self-hosted runner: ${cmd}"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Fetch ONNX Runtime public headers
+        run: |
+          git clone --depth 1 --branch "${ORT_REF}" "${ORT_REPO}" .ort
+
+      - name: Configure (zDNN enabled)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DONNXRUNTIME_INCLUDE_DIR="${GITHUB_WORKSPACE}/.ort/include/onnxruntime/core/session" \
+            -DTELUM_EP_ENABLE_ZDNN=ON
+
+      - name: Build
+        run: cmake --build build --parallel

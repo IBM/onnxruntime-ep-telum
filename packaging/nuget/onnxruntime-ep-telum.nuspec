@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package>
+  <metadata>
+    <id>onnxruntime.ep.telum</id>
+    <version>$version$</version>
+    <title>ONNX Runtime Telum Plugin EP</title>
+    <authors>IBM</authors>
+    <owners>k8ika0s</owners>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <license type="expression">Apache-2.0</license>
+    <projectUrl>https://github.com/k8ika0s/onnxruntime-ep-telum</projectUrl>
+    <repository type="git" url="https://github.com/k8ika0s/onnxruntime-ep-telum.git" branch="$branch$" commit="$commit$" />
+    <description>Standalone ONNX Runtime plugin Execution Provider (EP) project for IBM Telum (s390x).</description>
+    <releaseNotes>See GitHub release notes for details.</releaseNotes>
+    <tags>onnxruntime telum s390x execution-provider plugin</tags>
+    <contentFiles>
+      <files include="cs/any/any/**/*.cs" buildAction="Compile" />
+    </contentFiles>
+  </metadata>
+  <files>
+    <file src="README.md" target="" />
+    <file src="LICENSE" target="" />
+    <file src="CMakeLists.txt" target="build" />
+    <file src="packaging/nuget/src/OnnxRuntimeEpTelum/PluginEpHelpers.cs" target="contentFiles/cs/any/any/OnnxRuntimeEpTelum/PluginEpHelpers.cs" />
+    <file src="src/**" target="src" />
+    <file src="python/**" target="python" />
+  </files>
+</package>
