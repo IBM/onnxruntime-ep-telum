@@ -9,6 +9,8 @@
 
 #include <gsl/span>
 
+#include "kernels/op_kernel.h"
+
 #define ORT_API_MANUAL_INIT
 #include "onnxruntime_cxx_api.h"
 #undef ORT_API_MANUAL_INIT
@@ -37,7 +39,10 @@ class TelumBackend {
  public:
   virtual ~TelumBackend() = default;
 
+  virtual std::string BackendKind() const = 0;
+
   virtual bool SupportsMul() const noexcept = 0;
+  virtual bool SupportsOp(telum::OpKind op_kind) const noexcept = 0;
 
   virtual OrtStatus* Mul(gsl::span<const float> input0,
                          gsl::span<const float> input1,

@@ -50,10 +50,15 @@ namespace telum_compat {
 std::string BuildCompatibilityInfo(const std::string& ep_name,
                                    const std::string& ep_version,
                                    int ort_api_version,
-                                   const TelumBackendConfig& backend_config) {
-  return ep_name + ";" + kFieldVersion + "=" + ep_version + ";" + kFieldOrtApiVersion + "=" +
-         std::to_string(ort_api_version) + ";" + kFieldBackend + "=" + backend_config.backend_kind + ";" +
-         kFieldStubSupportMul + "=" + (backend_config.stub_support_mul ? "1" : "0");
+                                   const TelumBackendConfig& backend_config,
+                                   bool strict_mode,
+                                   bool drop_constant_initializers) {
+  return ep_name + ";" + kFieldSchema + "=2;" + kFieldVersion + "=" + ep_version + ";" +
+         kFieldOrtApiVersion + "=" + std::to_string(ort_api_version) + ";" + kFieldBackend + "=" +
+         backend_config.backend_kind + ";" + kFieldStubSupportMul + "=" +
+         (backend_config.stub_support_mul ? "1" : "0") + ";" + kFieldStrictMode + "=" +
+         (strict_mode ? "1" : "0") + ";" + kFieldDropConstantInitializers + "=" +
+         (drop_constant_initializers ? "1" : "0");
 }
 
 bool TryParseCompatibilityInfo(const std::string& raw_info,
@@ -93,6 +98,9 @@ bool TryParseCompatibilityInfo(const std::string& raw_info,
     fields[key] = val;
   }
 
+  if (auto it = fields.find(kFieldSchema); it != fields.end()) {
+    parsed_info.schema_version = it->second;
+  }
   if (auto it = fields.find(kFieldVersion); it != fields.end()) {
     parsed_info.ep_version = it->second;
   }
@@ -104,6 +112,12 @@ bool TryParseCompatibilityInfo(const std::string& raw_info,
   }
   if (auto it = fields.find(kFieldStubSupportMul); it != fields.end()) {
     parsed_info.stub_support_mul = it->second;
+  }
+  if (auto it = fields.find(kFieldStrictMode); it != fields.end()) {
+    parsed_info.strict_mode = it->second;
+  }
+  if (auto it = fields.find(kFieldDropConstantInitializers); it != fields.end()) {
+    parsed_info.drop_constant_initializers = it->second;
   }
 
   return true;

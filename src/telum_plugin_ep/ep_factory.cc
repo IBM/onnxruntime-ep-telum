@@ -22,6 +22,16 @@ constexpr const char* kTelumStubSupportMulLegacyConfigKey = "telum.stub_support_
 constexpr bool kTelumStubSupportMulDefault = true;
 constexpr const char* kTelumDropConstantInitializersLegacyConfigKey = "telum.drop_constant_initializers";
 constexpr bool kTelumDropConstantInitializersDefault = true;
+constexpr const char* kTelumStrictModeLegacyConfigKey = "telum.strict_mode";
+constexpr bool kTelumStrictModeDefault = false;
+constexpr const char* kTelumLogFallbacksLegacyConfigKey = "telum.log_fallbacks";
+constexpr bool kTelumLogFallbacksDefault = true;
+constexpr const char* kTelumLogPartitionSummaryLegacyConfigKey = "telum.log_partition_summary";
+constexpr bool kTelumLogPartitionSummaryDefault = true;
+constexpr const char* kTelumVerbosePartitionTraceLegacyConfigKey = "telum.verbose_partition_trace";
+constexpr bool kTelumVerbosePartitionTraceDefault = false;
+constexpr const char* kTelumEnableFusionLegacyConfigKey = "telum.enable_fusion";
+constexpr bool kTelumEnableFusionDefault = true;
 
 OrtStatus* ParseBoolConfigValue(const OrtApi& api,
                                 const std::string& config_key,
@@ -73,18 +83,16 @@ OrtStatus* ResolveTelumStubSupportMul(const OrtApi& api,
                                       const std::string& ep_name,
                                       bool& stub_support_mul) {
   const std::string prefixed_key = "ep." + ep_name + ".stub_support_mul";
-  std::string configured_value;
-  std::string configured_key;
+  const std::string default_value = kTelumStubSupportMulDefault ? "1" : "0";
+  std::string configured_value = default_value;
+  std::string configured_key = prefixed_key;
+
   try {
     const Ort::ConstSessionOptions sess_opt{&session_options};
     if (sess_opt.HasConfigEntry(prefixed_key.c_str())) {
       configured_value = sess_opt.GetConfigEntry(prefixed_key.c_str());
-      configured_key = prefixed_key;
     } else if (sess_opt.HasConfigEntry(kTelumStubSupportMulLegacyConfigKey)) {
       configured_value = sess_opt.GetConfigEntry(kTelumStubSupportMulLegacyConfigKey);
-      configured_key = kTelumStubSupportMulLegacyConfigKey;
-    } else {
-      configured_value = kTelumStubSupportMulDefault ? "1" : "0";
       configured_key = kTelumStubSupportMulLegacyConfigKey;
     }
   } catch (const Ort::Exception& ex) {
@@ -100,18 +108,15 @@ OrtStatus* ResolveTelumDropConstantInitializers(const OrtApi& api,
                                                 const std::string& ep_name,
                                                 bool& drop_constant_initializers) {
   const std::string prefixed_key = "ep." + ep_name + ".drop_constant_initializers";
-  std::string configured_value;
-  std::string configured_key;
+  const std::string default_value = kTelumDropConstantInitializersDefault ? "1" : "0";
+  std::string configured_value = default_value;
+  std::string configured_key = prefixed_key;
   try {
     const Ort::ConstSessionOptions sess_opt{&session_options};
     if (sess_opt.HasConfigEntry(prefixed_key.c_str())) {
       configured_value = sess_opt.GetConfigEntry(prefixed_key.c_str());
-      configured_key = prefixed_key;
     } else if (sess_opt.HasConfigEntry(kTelumDropConstantInitializersLegacyConfigKey)) {
       configured_value = sess_opt.GetConfigEntry(kTelumDropConstantInitializersLegacyConfigKey);
-      configured_key = kTelumDropConstantInitializersLegacyConfigKey;
-    } else {
-      configured_value = kTelumDropConstantInitializersDefault ? "1" : "0";
       configured_key = kTelumDropConstantInitializersLegacyConfigKey;
     }
   } catch (const Ort::Exception& ex) {
@@ -120,6 +125,34 @@ OrtStatus* ResolveTelumDropConstantInitializers(const OrtApi& api,
   }
 
   return ParseBoolConfigValue(api, configured_key, configured_value, drop_constant_initializers);
+}
+
+OrtStatus* ResolveTelumBoolOption(const OrtApi& api,
+                                  const OrtSessionOptions& session_options,
+                                  const std::string& ep_name,
+                                  const char* suffix_key,
+                                  const char* legacy_key,
+                                  bool default_value,
+                                  bool& parsed_value) {
+  const std::string prefixed_key = "ep." + ep_name + "." + suffix_key;
+  std::string configured_value;
+  std::string configured_key = prefixed_key;
+  try {
+    const Ort::ConstSessionOptions sess_opt{&session_options};
+    if (sess_opt.HasConfigEntry(prefixed_key.c_str())) {
+      configured_value = sess_opt.GetConfigEntry(prefixed_key.c_str());
+    } else if (legacy_key != nullptr && sess_opt.HasConfigEntry(legacy_key)) {
+      configured_value = sess_opt.GetConfigEntry(legacy_key);
+      configured_key = legacy_key;
+    } else {
+      configured_value = default_value ? "1" : "0";
+    }
+  } catch (const Ort::Exception& ex) {
+    Ort::Status status(ex);
+    return status.release();
+  }
+
+  return ParseBoolConfigValue(api, configured_key, configured_value, parsed_value);
 }
 
 }  // namespace
@@ -326,11 +359,36 @@ OrtStatus* ORT_API_CALL TelumEpFactory::CreateEpImpl(OrtEpFactory* this_ptr,
   bool drop_constant_initializers = kTelumDropConstantInitializersDefault;
   RETURN_IF_ERROR(ResolveTelumDropConstantInitializers(factory->ort_api, *session_options, factory->ep_name_,
                                                        drop_constant_initializers));
+  bool strict_mode = kTelumStrictModeDefault;
+  RETURN_IF_ERROR(ResolveTelumBoolOption(factory->ort_api, *session_options, factory->ep_name_,
+                                         "strict_mode", kTelumStrictModeLegacyConfigKey,
+                                         kTelumStrictModeDefault, strict_mode));
+  bool log_fallbacks = kTelumLogFallbacksDefault;
+  RETURN_IF_ERROR(ResolveTelumBoolOption(factory->ort_api, *session_options, factory->ep_name_,
+                                         "log_fallbacks", kTelumLogFallbacksLegacyConfigKey,
+                                         kTelumLogFallbacksDefault, log_fallbacks));
+  bool log_partition_summary = kTelumLogPartitionSummaryDefault;
+  RETURN_IF_ERROR(ResolveTelumBoolOption(factory->ort_api, *session_options, factory->ep_name_,
+                                         "log_partition_summary", kTelumLogPartitionSummaryLegacyConfigKey,
+                                         kTelumLogPartitionSummaryDefault, log_partition_summary));
+  bool verbose_partition_trace = kTelumVerbosePartitionTraceDefault;
+  RETURN_IF_ERROR(ResolveTelumBoolOption(factory->ort_api, *session_options, factory->ep_name_,
+                                         "verbose_partition_trace", kTelumVerbosePartitionTraceLegacyConfigKey,
+                                         kTelumVerbosePartitionTraceDefault, verbose_partition_trace));
+  bool enable_fusion = kTelumEnableFusionDefault;
+  RETURN_IF_ERROR(ResolveTelumBoolOption(factory->ort_api, *session_options, factory->ep_name_,
+                                         "enable_fusion", kTelumEnableFusionLegacyConfigKey,
+                                         kTelumEnableFusionDefault, enable_fusion));
 
   TelumEp::Config config = {};
   config.enable_ep_context = ep_context_enable == "1";
   config.backend_kind = backend_kind;
   config.stub_support_mul = stub_support_mul;
+  config.strict_mode = strict_mode;
+  config.log_fallbacks = log_fallbacks;
+  config.log_partition_summary = log_partition_summary;
+  config.verbose_partition_trace = verbose_partition_trace;
+  config.enable_fusion = enable_fusion;
   config.drop_constant_initializers = drop_constant_initializers;
 
   if (config.enable_ep_context && !config.drop_constant_initializers) {
@@ -483,16 +541,11 @@ OrtStatus* ORT_API_CALL TelumEpFactory::GetCustomOpDomainsImpl(
 }
 
 OrtStatusPtr TelumEpCustomOp::CreateKernelV2(const OrtApi& /*api*/,
-                                               const OrtKernelInfo* /*info*/,
-                                               void** op_kernel) const {
-  std::string node_input_0 = "X";
-  std::string node_input_1 = "W";
+                                             const OrtKernelInfo* /*info*/,
+                                             void** op_kernel) const {
   auto custom_kernel_op = std::make_unique<CustomMulKernel>(factory_->ort_api,
                                                             factory_->default_logger_,
-                                                            factory_->CustomOpBackend(),
-                                                            float_initializers_,
-                                                            node_input_0,
-                                                            node_input_1);
+                                                            factory_->CustomOpBackend());
   *op_kernel = custom_kernel_op.release();
   return nullptr;
 }
@@ -602,9 +655,13 @@ OrtStatus* ORT_API_CALL TelumEpFactory::ValidateCompiledModelCompatibilityInfoIm
 
   // Check backend kind if present.
   if (parsed_info.backend_kind.has_value()) {
-    if (GetLowercaseString(*parsed_info.backend_kind) != kTelumBackendDefault) {
-      // This build only supports the stub backend. A model compiled for a different
-      // backend should be treated as non-optimal and recompiled.
+    const std::string backend_kind = GetLowercaseString(*parsed_info.backend_kind);
+    if (backend_kind != kTelumBackendDefault && backend_kind != kTelumBackendZdnn) {
+      *model_compatibility = OrtCompiledModelCompatibility_EP_UNSUPPORTED;
+      return nullptr;
+    }
+    // Backend choice affects partitioning, so prefer recompilation across different runtime choices.
+    if (backend_kind != kTelumBackendDefault) {
       *model_compatibility = OrtCompiledModelCompatibility_EP_SUPPORTED_PREFER_RECOMPILATION;
       return nullptr;
     }
@@ -614,6 +671,22 @@ OrtStatus* ORT_API_CALL TelumEpFactory::ValidateCompiledModelCompatibilityInfoIm
   if (parsed_info.stub_support_mul.has_value()) {
     bool parsed_bool = false;
     if (!telum_compat::TryParseBoolToken(*parsed_info.stub_support_mul, parsed_bool)) {
+      *model_compatibility = OrtCompiledModelCompatibility_EP_UNSUPPORTED;
+      return nullptr;
+    }
+  }
+
+  if (parsed_info.strict_mode.has_value()) {
+    bool parsed_bool = false;
+    if (!telum_compat::TryParseBoolToken(*parsed_info.strict_mode, parsed_bool)) {
+      *model_compatibility = OrtCompiledModelCompatibility_EP_UNSUPPORTED;
+      return nullptr;
+    }
+  }
+
+  if (parsed_info.drop_constant_initializers.has_value()) {
+    bool parsed_bool = false;
+    if (!telum_compat::TryParseBoolToken(*parsed_info.drop_constant_initializers, parsed_bool)) {
       *model_compatibility = OrtCompiledModelCompatibility_EP_UNSUPPORTED;
       return nullptr;
     }

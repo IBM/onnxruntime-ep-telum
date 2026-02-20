@@ -3,92 +3,124 @@
 
 #pragma once
 
-#include <mutex>
 #include "onnxruntime_c_api.h"
-#include "ep.h"
 
-// Plugin EPs can provide two types of custom ops:
-//
-// 1. A full OrtCustomOp with a concrete kernel implementation
-//    - This Telum scaffold EP demonstrates this approach.
-//    - In GetCapability(), it calls EpGraphSupportInfo_AddSingleNode() to inform ORT
-//      that the custom node should NOT be fused or compiled. Instead, ORT should invoke
-//      the custom node's Compute() function at runtime.
-//
-// 2. A "placeholder" OrtCustomOp with an empty kernel implementation
-//    - A compile-based Plugin EP can supply an OrtCustomOp whose CustomKernel::Compute()
-//      does nothing. The purpose is to satisfy model validation during model loading by
-//      registering the custom op as a valid operator in the session.
-//    - In GetCapability(), the EP should call EpGraphSupportInfo_AddNodesToFuse() to
-//      notify ORT that this custom node should be fused and compiled by the EP.
-//    - In Compile(), the EP executes its compiled bits to perform inference for
-//      the fused custom node.
-//
-// Note: Approach #2 is suitable for plugin TRT RTX EP to support TRT plugins.
+#include "../plugin_ep_utils.h"
+#include "telum_backend.h"
 
-struct CustomMulKernel : MulKernel {
+class TelumEpFactory;
+
+struct CustomMulKernel {
   CustomMulKernel(const OrtApi& ort_api,
                   const OrtLogger& logger,
-                  TelumBackend& backend,
-                  const std::unordered_map<std::string, FloatInitializer>& float_initializers,
-                  std::string input0_name,
-                  std::string input1_name) : MulKernel(ort_api, logger, backend, float_initializers,
-                                                       input0_name, input1_name) {
-  }
+                  TelumBackend& backend)
+      : ort_api_(ort_api), logger_(logger), backend_(backend) {}
 
   OrtStatusPtr ComputeV2(OrtKernelContext* kernel_ctx) {
-    return MulKernel::Compute(kernel_ctx);
+    try {
+      Ort::KernelContext context{kernel_ctx};
+      if (context.GetInputCount() != 2) {
+        return Ort::Status("Custom_Mul expects exactly 2 inputs", ORT_INVALID_ARGUMENT).release();
+      }
+
+      Ort::ConstValue x = context.GetInput(0);
+      Ort::ConstValue y = context.GetInput(1);
+
+      auto x_info = x.GetTensorTypeAndShapeInfo();
+      auto y_info = y.GetTensorTypeAndShapeInfo();
+      if (x_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+          y_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+        return Ort::Status("Custom_Mul supports float tensors only", ORT_INVALID_ARGUMENT).release();
+      }
+
+      const auto x_shape = x_info.GetShape();
+      const auto y_shape = y_info.GetShape();
+      if (x_shape != y_shape) {
+        return Ort::Status("Custom_Mul requires equal input shapes", ORT_INVALID_ARGUMENT).release();
+      }
+
+      const size_t num_elements = x_info.GetElementCount();
+      Ort::UnownedValue out = context.GetOutput(0, x_shape);
+
+      const float* x_data = x.GetTensorData<float>();
+      const float* y_data = y.GetTensorData<float>();
+      float* out_data = out.GetTensorMutableData<float>();
+
+      OrtStatus* st = backend_.Mul(gsl::span<const float>(x_data, num_elements),
+                                   gsl::span<const float>(y_data, num_elements),
+                                   gsl::span<float>(out_data, num_elements));
+      if (st == nullptr) {
+        return nullptr;
+      }
+
+      Ort::Status backend_status{st};
+      // CPU fallback for custom op if backend path is disabled/unavailable.
+      for (size_t i = 0; i < num_elements; ++i) {
+        out_data[i] = x_data[i] * y_data[i];
+      }
+
+      IGNORE_ORTSTATUS(ort_api_.Logger_LogMessage(
+          &logger_, ORT_LOGGING_LEVEL_WARNING,
+          ("Custom_Mul backend fallback: " + std::string(backend_status.GetErrorMessage())).c_str(),
+          ORT_FILE, __LINE__, __FUNCTION__));
+
+      return nullptr;
+
+    } catch (const Ort::Exception& ex) {
+      Ort::Status status(ex);
+      return status.release();
+    } catch (const std::exception& ex) {
+      return Ort::Status(ex.what(), ORT_EP_FAIL).release();
+    }
   }
+
+ private:
+  const OrtApi& ort_api_;
+  const OrtLogger& logger_;
+  TelumBackend& backend_;
 };
 
 struct TelumEpCustomOp : Ort::CustomOpBase<TelumEpCustomOp, CustomMulKernel, /*WithStatus*/ true> {
-  explicit TelumEpCustomOp(const char* provider, TelumEpFactory* factory) : provider_(provider),
-                                                                                factory_(factory) {
-  }
+  explicit TelumEpCustomOp(const char* provider, TelumEpFactory* factory)
+      : provider_(provider), factory_(factory) {}
 
   OrtStatusPtr CreateKernelV2(const OrtApi& api, const OrtKernelInfo* info, void** op_kernel) const;
-
   OrtStatusPtr KernelComputeV2(void* op_kernel, OrtKernelContext* context) const;
 
-  const char* GetName() const { return name_; };
+  const char* GetName() const { return name_; }
+  void SetName(const char* name) { name_ = name; }
 
-  void SetName(const char* name) { name_ = name; };
+  const char* GetExecutionProviderType() const { return provider_; }
 
-  const char* GetExecutionProviderType() const { return provider_; };
+  size_t GetInputTypeCount() const { return num_inputs_; }
+  void SetInputTypeCount(size_t num) { num_inputs_ = num; }
 
-  size_t GetInputTypeCount() const { return num_inputs_; };
-
-  void SetInputTypeCount(size_t num) { num_inputs_ = num; };
-
-  ONNXTensorElementDataType GetInputType(size_t /*index*/) const { return ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED; };
+  ONNXTensorElementDataType GetInputType(size_t /*index*/) const {
+    return ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+  }
 
   OrtCustomOpInputOutputCharacteristic GetInputCharacteristic(size_t) const {
     return OrtCustomOpInputOutputCharacteristic::INPUT_OUTPUT_VARIADIC;
-  };
+  }
 
-  size_t GetOutputTypeCount() const { return num_outputs_; };
+  size_t GetOutputTypeCount() const { return num_outputs_; }
+  void SetOutputTypeCount(size_t num) { num_outputs_ = num; }
 
-  void SetOutputTypeCount(size_t num) { num_outputs_ = num; };
-
-  ONNXTensorElementDataType GetOutputType(size_t /*index*/) const { return ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED; };
+  ONNXTensorElementDataType GetOutputType(size_t /*index*/) const {
+    return ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+  }
 
   OrtCustomOpInputOutputCharacteristic GetOutputCharacteristic(size_t) const {
     return OrtCustomOpInputOutputCharacteristic::INPUT_OUTPUT_VARIADIC;
-  };
-
-  bool GetVariadicInputHomogeneity() const {
-    return false;  // heterogenous
   }
 
-  bool GetVariadicOutputHomogeneity() const {
-    return false;  // heterogeneous
-  }
+  bool GetVariadicInputHomogeneity() const { return false; }
+  bool GetVariadicOutputHomogeneity() const { return false; }
 
  private:
   const char* provider_ = nullptr;
   const char* name_ = nullptr;
-  size_t num_inputs_ = 1;   // set to 1 to match with default min_arity for variadic input
-  size_t num_outputs_ = 1;  // set to 1 to match with default min_arity for variadic output
+  size_t num_inputs_ = 1;
+  size_t num_outputs_ = 1;
   TelumEpFactory* factory_ = nullptr;
-  std::unordered_map<std::string, FloatInitializer> float_initializers_;
 };
