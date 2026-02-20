@@ -35,8 +35,17 @@ class StubTelumBackend final : public TelumBackend {
   explicit StubTelumBackend(const OrtApi& api, bool supports_mul)
       : api_(api), supports_mul_(supports_mul) {}
 
+  std::string BackendKind() const override { return kTelumBackendKindStub; }
+
   bool SupportsMul() const noexcept override {
     return supports_mul_;
+  }
+
+  bool SupportsOp(telum::OpKind op_kind) const noexcept override {
+    if (op_kind == telum::OpKind::kMul) {
+      return supports_mul_;
+    }
+    return true;
   }
 
   TelumMulTrustedFn GetMulTrustedFn() noexcept override {
@@ -101,7 +110,11 @@ class UnavailableTelumBackend final : public TelumBackend {
   explicit UnavailableTelumBackend(const OrtApi& api, std::string reason)
       : api_(api), reason_(std::move(reason)) {}
 
+  std::string BackendKind() const override { return "unavailable"; }
+
   bool SupportsMul() const noexcept override { return false; }
+
+  bool SupportsOp(telum::OpKind /*op_kind*/) const noexcept override { return false; }
 
   OrtStatus* Mul(gsl::span<const float> /*input0*/,
                  gsl::span<const float> /*input1*/,
@@ -124,6 +137,24 @@ constexpr int kZdnnOk = 0;
 constexpr uint32_t kZdnnLayout2D = 1;  // ZDNN_2D
 constexpr uint32_t kZdnnTypeFp32 = 255;  // FP32
 constexpr int kNnpaMul = 18;  // NNPA_MUL
+constexpr int kNnpaAdd = 16;  // NNPA_ADD
+constexpr int kNnpaSub = 17;  // NNPA_SUB
+constexpr int kNnpaDiv = 19;  // NNPA_DIV
+constexpr int kNnpaMin = 20;  // NNPA_MIN
+constexpr int kNnpaMax = 21;  // NNPA_MAX
+constexpr int kNnpaLog = 32;  // NNPA_LOG
+constexpr int kNnpaExp = 33;  // NNPA_EXP
+constexpr int kNnpaSqrt = 34;  // NNPA_SQRT
+constexpr int kNnpaRelu = 49;  // NNPA_RELU
+constexpr int kNnpaTanh = 50;  // NNPA_TANH
+constexpr int kNnpaSigmoid = 51;  // NNPA_SIGMOID
+constexpr int kNnpaSoftmax = 52;  // NNPA_SOFTMAX
+constexpr int kNnpaGelu = 53;  // NNPA_GELU
+constexpr int kNnpaMoments = 65;  // NNPA_MOMENTS
+constexpr int kNnpaLayerNorm = 66;  // NNPA_LAYERNORM
+constexpr int kNnpaMatmulOp = 113;  // NNPA_MATMUL_OP
+constexpr int kNnpaMatmulOpBcast23 = 114;  // NNPA_MATMUL_OP_BCAST23
+constexpr int kNnpaMatmulOpBcast1 = 115;  // NNPA_MATMUL_OP_BCAST1
 
 struct ZdnnTensorDesc {
   uint32_t layout;
@@ -237,16 +268,76 @@ class ZdnnTelumBackend final : public TelumBackend {
     }
 
     const bool nnpa_installed = zdnn_.is_nnpa_installed();
-    const bool mul_supported = nnpa_installed && zdnn_.is_nnpa_function_installed(1, kNnpaMul);
-    supports_mul_ = mul_supported;
+    supports_mul_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaMul);
+    supports_add_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaAdd);
+    supports_sub_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaSub);
+    supports_div_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaDiv);
+    supports_min_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaMin);
+    supports_max_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaMax);
+    supports_relu_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaRelu);
+    supports_gelu_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaGelu);
+    supports_tanh_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaTanh);
+    supports_sigmoid_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaSigmoid);
+    supports_exp_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaExp);
+    supports_log_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaLog);
+    supports_sqrt_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaSqrt);
+    supports_softmax_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaSoftmax);
+    supports_layernorm_ = nnpa_installed && IsNnpaFunctionInstalled(kNnpaMoments) &&
+                          IsNnpaFunctionInstalled(kNnpaLayerNorm);
+    supports_matmul_ = nnpa_installed &&
+                       (IsNnpaFunctionInstalled(kNnpaMatmulOp) ||
+                        IsNnpaFunctionInstalled(kNnpaMatmulOpBcast23) ||
+                        IsNnpaFunctionInstalled(kNnpaMatmulOpBcast1));
 
-    if (!mul_supported) {
+    if (!supports_mul_) {
       reason_ = nnpa_installed ? "NNPA MUL function not installed" : "NNPA not installed/enabled";
     }
   }
 
+  std::string BackendKind() const override { return kTelumBackendKindZdnn; }
+
   bool SupportsMul() const noexcept override {
     return supports_mul_;
+  }
+
+  bool SupportsOp(telum::OpKind op_kind) const noexcept override {
+    switch (op_kind) {
+      case telum::OpKind::kMatMul:
+      case telum::OpKind::kGemm:
+        return supports_matmul_;
+      case telum::OpKind::kAdd:
+        return supports_add_;
+      case telum::OpKind::kSub:
+        return supports_sub_;
+      case telum::OpKind::kMul:
+        return supports_mul_;
+      case telum::OpKind::kDiv:
+        return supports_div_;
+      case telum::OpKind::kMin:
+        return supports_min_;
+      case telum::OpKind::kMax:
+        return supports_max_;
+      case telum::OpKind::kRelu:
+        return supports_relu_;
+      case telum::OpKind::kGelu:
+        return supports_gelu_;
+      case telum::OpKind::kTanh:
+        return supports_tanh_;
+      case telum::OpKind::kSigmoid:
+        return supports_sigmoid_;
+      case telum::OpKind::kExp:
+        return supports_exp_;
+      case telum::OpKind::kLog:
+        return supports_log_;
+      case telum::OpKind::kSqrt:
+        return supports_sqrt_;
+      case telum::OpKind::kSoftmax:
+        return supports_softmax_;
+      case telum::OpKind::kLayerNormalization:
+        return supports_layernorm_;
+      default:
+        return true;
+    }
   }
 
   TelumMulTrustedFn GetMulTrustedFn() noexcept override {
@@ -274,6 +365,10 @@ class ZdnnTelumBackend final : public TelumBackend {
   }
 
  private:
+  bool IsNnpaFunctionInstalled(int fn) const noexcept {
+    return zdnn_.is_nnpa_function_installed(1, fn);
+  }
+
   static bool Choose2DDims(size_t num_elems, uint32_t& dim2, uint32_t& dim1) noexcept {
     // Conservative split that keeps the innermost dimension <= 32768 (observed limit for this environment).
     constexpr size_t kMaxDim1 = 32768;
@@ -448,6 +543,21 @@ class ZdnnTelumBackend final : public TelumBackend {
   const OrtApi& api_;
   const ZdnnDynApi& zdnn_;
   bool supports_mul_{false};
+  bool supports_add_{false};
+  bool supports_sub_{false};
+  bool supports_div_{false};
+  bool supports_min_{false};
+  bool supports_max_{false};
+  bool supports_relu_{false};
+  bool supports_gelu_{false};
+  bool supports_tanh_{false};
+  bool supports_sigmoid_{false};
+  bool supports_exp_{false};
+  bool supports_log_{false};
+  bool supports_sqrt_{false};
+  bool supports_softmax_{false};
+  bool supports_layernorm_{false};
+  bool supports_matmul_{false};
   std::string reason_;
 };
 

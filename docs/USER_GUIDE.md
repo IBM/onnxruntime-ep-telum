@@ -8,7 +8,7 @@ The repository provides a standalone ONNX Runtime plugin EP shared library.
 
 - Registration name: `TelumPluginExecutionProvider`
 - Primary integration API: plugin EP runtime registration
-- Current scaffold focus: `Mul` execution path and EPContext support
+- Static-shape-first execution model with multi-op partitioning and EPContext replay support
 
 ## No ONNX Runtime Rebuild Required
 
@@ -122,6 +122,37 @@ Example registration name:
   - Default: `1`
 - Legacy alias: `telum.stub_support_mul`
 
+### Strict mode
+
+- `ep.TelumPluginExecutionProvider.strict_mode`
+  - Values: boolean tokens
+  - Default: `0`
+  - Behavior: fail-fast if a Telum-supported op is rejected by shape/type/constraint checks
+- Legacy alias: `telum.strict_mode`
+
+### Fallback and partition logging
+
+- `ep.TelumPluginExecutionProvider.log_fallbacks`
+  - Values: boolean tokens
+  - Default: `1`
+- `ep.TelumPluginExecutionProvider.log_partition_summary`
+  - Values: boolean tokens
+  - Default: `1`
+- `ep.TelumPluginExecutionProvider.verbose_partition_trace`
+  - Values: boolean tokens
+  - Default: `0`
+- Legacy aliases:
+  - `telum.log_fallbacks`
+  - `telum.log_partition_summary`
+  - `telum.verbose_partition_trace`
+
+### Fusion policy toggle
+
+- `ep.TelumPluginExecutionProvider.enable_fusion`
+  - Values: boolean tokens
+  - Default: `1`
+- Legacy alias: `telum.enable_fusion`
+
 ### Constant initializer handling
 
 - `ep.TelumPluginExecutionProvider.drop_constant_initializers`
@@ -136,23 +167,33 @@ Example registration name:
   - Default: `0`
   - Constraint: if `ep.context_enable=1`, then `drop_constant_initializers` must be enabled
 
-## Supported Graph Patterns (Current Scaffold)
+## Supported Operators and Partitioning
 
-- `Mul` nodes:
-  - `float32` inputs/outputs only
-  - exactly 2 inputs + 1 output
-  - static, equal input shapes required
-- `EPContext` nodes in domain `com.microsoft` with matching `source` attribute
-- `Custom_Mul` in domain `test` for sample custom-op flow
+Partitioning is static-shape-first. Unsupported nodes are left for other execution providers (typically CPU).
 
-Unsupported nodes remain on other execution providers.
+- Math:
+  - `MatMul`, `Gemm`
+  - `Add`, `Sub`, `Mul`, `Div`, `Min`, `Max`
+- Activations:
+  - `Relu`, `Gelu`, `Tanh`, `Sigmoid`, `Exp`, `Log`, `Sqrt`, `Softmax`
+- Normalization:
+  - `LayerNormalization`
+- Tensor:
+  - `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `ReduceMean`, `Cast`
+  - `Where`, `Expand`, `Concat`, `Gather`, `Slice`
+- EPContext:
+  - `EPContext` in domain `com.microsoft` when `source` matches this EP
+  - v2 serialized metadata replay path with legacy Mul-format compatibility
+- Custom op sample path:
+  - `Custom_Mul` in domain `test`
 
 ## zDNN Backend Notes
 
 - zDNN path is compile-gated via `TELUM_EP_ENABLE_ZDNN`
 - Runtime selection is config-based (`backend=zdnn`)
 - On Linux s390x, the implementation dynamically loads `libzdnn.so`
-- If zDNN cannot be loaded or NNPA MUL capability is unavailable, backend capability is rejected
+- Capability gating is per-op via NNPA/zDNN availability checks
+- If zDNN cannot be loaded, or required NNPA functions are unavailable for an op, that op is not assigned
 
 ## Distribution Helper APIs
 
@@ -195,7 +236,8 @@ When enabled, the plugin emits lightweight timing summaries on unload.
 - Plugin fails to load:
   - Check shared library path and dynamic library dependencies
 - EP not selected for nodes:
-  - Verify node shapes/types satisfy current scaffold constraints
+  - Verify node shapes/types satisfy static-shape-first constraints
+  - Review partition/fallback logs (`log_partition_summary`, `log_fallbacks`, `verbose_partition_trace`)
   - Verify backend choice (`stub` or `zdnn`) and availability
 - Invalid config value:
   - Use supported boolean tokens or allowed enum values

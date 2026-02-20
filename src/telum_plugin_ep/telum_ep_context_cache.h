@@ -4,26 +4,26 @@
 #pragma once
 
 #include <string>
-#include <unordered_map>
+#include <vector>
 
-#include "../plugin_ep_utils.h"
+#include "kernels/op_kernel.h"
 
 namespace telum_ep_context {
 
-struct MulEpCacheContext {
-  std::string input0_name;
-  std::string input1_name;
-  std::unordered_map<std::string, FloatInitializer> float_initializers;
+struct EpCacheContext {
+  std::string op_type;
+  std::string attributes_blob;
+  std::vector<std::string> input_names;
+  telum::TensorInitializerMap initializers;
 };
 
-std::string SerializeMulEpCacheContext(
-    const std::string& input0_name,
-    const std::string& input1_name,
-    const std::unordered_map<std::string, FloatInitializer>& float_initializers);
+std::string SerializeEpCacheContext(const std::string& op_type,
+                                    const std::string& attributes_blob,
+                                    gsl::span<const std::string> input_names,
+                                    const telum::TensorInitializerMap& initializers);
 
-OrtStatus* ParseMulEpCacheContext(const OrtApi& ort_api,
-                                  const std::string& serialized,
-                                  MulEpCacheContext& parsed);
+OrtStatus* ParseEpCacheContext(const OrtApi& ort_api,
+                               const std::string& serialized,
+                               EpCacheContext& parsed);
 
 }  // namespace telum_ep_context
-
