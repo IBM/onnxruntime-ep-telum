@@ -53,11 +53,10 @@ std::string BuildCompatibilityInfo(const std::string& ep_name,
                                    const TelumBackendConfig& backend_config,
                                    bool strict_mode,
                                    bool drop_constant_initializers) {
-  return ep_name + ";" + kFieldSchema + "=2;" + kFieldVersion + "=" + ep_version + ";" +
+  return ep_name + ";" + kFieldSchema + "=3;" + kFieldVersion + "=" + ep_version + ";" +
          kFieldOrtApiVersion + "=" + std::to_string(ort_api_version) + ";" + kFieldBackend + "=" +
-         backend_config.backend_kind + ";" + kFieldStubSupportMul + "=" +
-         (backend_config.stub_support_mul ? "1" : "0") + ";" + kFieldStrictMode + "=" +
-         (strict_mode ? "1" : "0") + ";" + kFieldDropConstantInitializers + "=" +
+         backend_config.backend_kind + ";" + kFieldStrictMode + "=" + (strict_mode ? "1" : "0") + ";" +
+         kFieldDropConstantInitializers + "=" +
          (drop_constant_initializers ? "1" : "0");
 }
 
@@ -109,9 +108,6 @@ bool TryParseCompatibilityInfo(const std::string& raw_info,
   }
   if (auto it = fields.find(kFieldBackend); it != fields.end()) {
     parsed_info.backend_kind = it->second;
-  }
-  if (auto it = fields.find(kFieldStubSupportMul); it != fields.end()) {
-    parsed_info.stub_support_mul = it->second;
   }
   if (auto it = fields.find(kFieldStrictMode); it != fields.end()) {
     parsed_info.strict_mode = it->second;

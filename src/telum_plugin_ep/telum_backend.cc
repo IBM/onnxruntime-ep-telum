@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <limits>
 #include <string>
-#include <type_traits>
 #include <unordered_map>
 #include <utility>
 
@@ -19,91 +18,7 @@
 
 namespace {
 
-#if defined(_MSC_VER)
-#define TELUM_RESTRICT __restrict
-#elif defined(__GNUC__) || defined(__clang__)
-#define TELUM_RESTRICT __restrict__
-#else
-#define TELUM_RESTRICT
-#endif
-
-constexpr const char* kTelumBackendKindStub = "stub";
 constexpr const char* kTelumBackendKindZdnn = "zdnn";
-
-class StubTelumBackend final : public TelumBackend {
- public:
-  explicit StubTelumBackend(const OrtApi& api, bool supports_mul)
-      : api_(api), supports_mul_(supports_mul) {}
-
-  std::string BackendKind() const override { return kTelumBackendKindStub; }
-
-  bool SupportsMul() const noexcept override {
-    return supports_mul_;
-  }
-
-  bool SupportsOp(telum::OpKind op_kind) const noexcept override {
-    if (op_kind == telum::OpKind::kMul) {
-      return supports_mul_;
-    }
-    return true;
-  }
-
-  TelumMulTrustedFn GetMulTrustedFn() noexcept override {
-    if (!supports_mul_) {
-      return {};
-    }
-    return TelumMulTrustedFn{&StubMulTrusted, this};
-  }
-
-  OrtStatus* Mul(gsl::span<const float> input0,
-                 gsl::span<const float> input1,
-                 gsl::span<float> output) noexcept override {
-    if (!supports_mul_) {
-      return api_.CreateStatus(ORT_FAIL, "StubTelumBackend Mul is disabled by configuration");
-    }
-
-    const size_t num_elems = input0.size();
-    if (num_elems != input1.size() || num_elems != output.size()) {
-      return api_.CreateStatus(ORT_INVALID_ARGUMENT,
-                               "StubTelumBackend expected same number of elements for Mul");
-    }
-
-    const float* input0_data = input0.data();
-    const float* input1_data = input1.data();
-    float* output_data = output.data();
-    for (size_t i = 0; i < num_elems; ++i) {
-      output_data[i] = input0_data[i] * input1_data[i];
-    }
-
-    return nullptr;
-  }
-
- private:
-  static OrtStatus* StubMulTrusted(void* ctx,
-                                   const float* input0_data,
-                                   const float* input1_data,
-                                   float* output_data,
-                                   size_t num_elems) noexcept {
-    (void)ctx;
-    // These pointers are expected to be non-aliasing for ORT tensors. Mark them restrict to help auto-vectorization.
-    const float* TELUM_RESTRICT a = input0_data;
-    const float* TELUM_RESTRICT b = input1_data;
-    float* TELUM_RESTRICT c = output_data;
-
-#if defined(__clang__)
-#pragma clang loop vectorize(enable) interleave(enable)
-#elif defined(__GNUC__)
-#pragma GCC ivdep
-#endif
-    for (size_t i = 0; i < num_elems; ++i) {
-      c[i] = a[i] * b[i];
-    }
-    return nullptr;
-  }
-
-  const OrtApi& api_;
-  bool supports_mul_;
-};
 
 class UnavailableTelumBackend final : public TelumBackend {
  public:
@@ -584,11 +499,7 @@ std::unique_ptr<TelumBackend> CreateTelumBackend(const OrtApi& api, const TelumB
     }
   }
 
-  if (config.backend_kind == kTelumBackendKindStub || config.backend_kind.empty()) {
-    return std::make_unique<StubTelumBackend>(api, config.stub_support_mul);
-  }
-
-  if (config.backend_kind == kTelumBackendKindZdnn) {
+  if (config.backend_kind.empty() || config.backend_kind == kTelumBackendKindZdnn) {
 #if defined(ORT_TELUM_PLUGIN_EP_ZDNN) && defined(__linux__) && (defined(__s390x__) || defined(__s390__))
     return std::make_unique<ZdnnTelumBackend>(api);
 #else

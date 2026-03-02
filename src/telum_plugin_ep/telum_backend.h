@@ -16,8 +16,7 @@
 #undef ORT_API_MANUAL_INIT
 
 struct TelumBackendConfig {
-  std::string backend_kind = "stub";
-  bool stub_support_mul = true;
+  std::string backend_kind = "zdnn";
 };
 
 // Optional fast-path function pointer for Mul. Allows the EP to avoid per-call virtual dispatch and

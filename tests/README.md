@@ -10,4 +10,4 @@ Planned additions:
 - Capability policy unit tests
 - Strict-mode negative tests
 - EPContext replay compatibility tests
-- Backend-gating simulation tests (stub-based)
+- Backend-gating simulation tests (zDNN capability-based)

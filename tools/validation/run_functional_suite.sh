@@ -7,12 +7,12 @@ set -euo pipefail
 #   ./tools/validation/run_functional_suite.sh \
 #     --perf-test /path/to/onnxruntime_perf_test \
 #     --model-root /path/to/models \
-#     --backend stub|zdnn \
+#     --backend zdnn \
 #     --out reports/parity
 
 PERF_TEST=""
 MODEL_ROOT=""
-BACKEND="stub"
+BACKEND="zdnn"
 OUT_DIR="reports/parity"
 
 while [[ $# -gt 0 ]]; do
@@ -27,6 +27,11 @@ done
 
 if [[ -z "$PERF_TEST" || -z "$MODEL_ROOT" ]]; then
   echo "Missing required args --perf-test and --model-root" >&2
+  exit 2
+fi
+
+if [[ "$BACKEND" != "zdnn" ]]; then
+  echo "Unsupported backend '${BACKEND}'. Supported backend: zdnn" >&2
   exit 2
 fi
 

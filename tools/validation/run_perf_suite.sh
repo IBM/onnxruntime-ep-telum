@@ -33,6 +33,11 @@ if [[ -z "$PERF_TEST" || -z "$MODEL_ROOT" ]]; then
   exit 2
 fi
 
+if [[ "$TELUM_BACKEND" != "zdnn" ]]; then
+  echo "Unsupported --telum-backend '${TELUM_BACKEND}'. Supported backend: zdnn" >&2
+  exit 2
+fi
+
 mkdir -p "$OUT_DIR"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 CSV="$OUT_DIR/perf_parity_${STAMP}.csv"

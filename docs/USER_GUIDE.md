@@ -86,7 +86,7 @@ std::unique_ptr<Ort::Session> CreateSessionWithTelum(
   }
 
   Ort::SessionOptions so;
-  so.SetConfigEntry("ep.TelumPluginExecutionProvider.backend", "stub");
+  so.SetConfigEntry("ep.TelumPluginExecutionProvider.backend", "zdnn");
   Ort::ThrowOnError(Ort::GetApi().SessionOptionsAppendExecutionProvider_V2(
       so, "TelumPluginExecutionProvider", nullptr));
 
@@ -111,16 +111,9 @@ Example registration name:
 ### Backend selection
 
 - `ep.TelumPluginExecutionProvider.backend`
-  - Values: `stub`, `zdnn`
-  - Default: `stub`
+  - Values: `zdnn`
+  - Default: `zdnn`
 - Legacy alias (still accepted): `telum.backend`
-
-### Stub Mul switch
-
-- `ep.TelumPluginExecutionProvider.stub_support_mul`
-  - Values: boolean tokens (`0/1`, `false/true`, `no/yes`, `off/on`)
-  - Default: `1`
-- Legacy alias: `telum.stub_support_mul`
 
 ### Strict mode
 
@@ -238,6 +231,6 @@ When enabled, the plugin emits lightweight timing summaries on unload.
 - EP not selected for nodes:
   - Verify node shapes/types satisfy static-shape-first constraints
   - Review partition/fallback logs (`log_partition_summary`, `log_fallbacks`, `verbose_partition_trace`)
-  - Verify backend choice (`stub` or `zdnn`) and availability
+  - Verify backend choice (`zdnn`) and availability
 - Invalid config value:
   - Use supported boolean tokens or allowed enum values

@@ -6,7 +6,7 @@ ORT_REF ?= main
 ORT_DIR ?= .ort
 BUILD_DIR ?= build
 ONNXRUNTIME_INCLUDE_DIR ?= $(ORT_DIR)/include/onnxruntime/core/session
-TELUM_EP_ENABLE_ZDNN ?= OFF
+TELUM_EP_ENABLE_ZDNN ?= ON
 
 CMAKE ?= cmake
 PYTHON ?= python3

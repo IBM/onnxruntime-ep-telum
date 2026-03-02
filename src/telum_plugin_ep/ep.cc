@@ -77,7 +77,7 @@ TelumEp::TelumEp(TelumEpFactory& factory,
       name_(name),
       config_(config),
       logger_(logger),
-      backend_(CreateTelumBackend(ort_api, TelumBackendConfig{config_.backend_kind, config_.stub_support_mul})) {
+      backend_(CreateTelumBackend(ort_api, TelumBackendConfig{config_.backend_kind})) {
   telum_profile::ScopedEvent profile_ctor{telum_profile::Event::kTelumEpCtor};
 
   ort_version_supported = ORT_API_VERSION;
@@ -99,8 +99,7 @@ TelumEp::TelumEp(TelumEpFactory& factory,
      << ", verbose_partition_trace=" << BoolToStr(config_.verbose_partition_trace)
      << ", enable_fusion=" << BoolToStr(config_.enable_fusion)
      << ", drop_constant_initializers=" << BoolToStr(config_.drop_constant_initializers)
-     << ", enable_ep_context=" << BoolToStr(config_.enable_ep_context)
-     << ", stub_support_mul=" << BoolToStr(config_.stub_support_mul);
+     << ", enable_ep_context=" << BoolToStr(config_.enable_ep_context);
 
   IGNORE_ORTSTATUS(ort_api.Logger_LogMessage(
       &logger_, ORT_LOGGING_LEVEL_INFO, os.str().c_str(), ORT_FILE, __LINE__, __FUNCTION__));
@@ -481,7 +480,7 @@ const char* ORT_API_CALL TelumEp::GetCompiledModelCompatibilityInfoImpl(OrtEp* t
   (void)graph;
   auto* ep = static_cast<TelumEp*>(this_ptr);
 
-  const TelumBackendConfig backend_config{ep->config_.backend_kind, ep->config_.stub_support_mul};
+  const TelumBackendConfig backend_config{ep->config_.backend_kind};
   ep->compatibility_info_ = telum_compat::BuildCompatibilityInfo(
       ep->name_, ep->factory_.GetEpVersionString(), ORT_API_VERSION, backend_config,
       ep->config_.strict_mode, ep->config_.drop_constant_initializers);

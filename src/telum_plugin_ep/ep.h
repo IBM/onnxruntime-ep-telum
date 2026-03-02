@@ -17,8 +17,7 @@ class TelumEp : public OrtEp, public ApiPtrs {
  public:
   struct Config {
     bool enable_ep_context = false;
-    std::string backend_kind = "stub";
-    bool stub_support_mul = true;
+    std::string backend_kind = "zdnn";
 
     bool strict_mode = false;
     bool log_fallbacks = true;

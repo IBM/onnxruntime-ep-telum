@@ -64,9 +64,8 @@ Contributions are welcome through pull requests.
   - v2 EPContext serialization format with compatibility path for legacy Mul-only format
 - Custom-op flow example:
   - `Custom_Mul` in `test` domain
-- Backends:
-  - `stub` (default)
-  - optional `zdnn` runtime path on Linux s390x
+- Backend:
+  - `zdnn` runtime path on Linux s390x
 
 ## Build Notes
 
@@ -85,8 +84,7 @@ Preferred key style:
 
 Examples for registration name `TelumPluginExecutionProvider`:
 
-- `ep.TelumPluginExecutionProvider.backend` = `stub|zdnn`
-- `ep.TelumPluginExecutionProvider.stub_support_mul` = boolean token
+- `ep.TelumPluginExecutionProvider.backend` = `zdnn`
 - `ep.TelumPluginExecutionProvider.strict_mode` = boolean token
 - `ep.TelumPluginExecutionProvider.log_fallbacks` = boolean token
 - `ep.TelumPluginExecutionProvider.log_partition_summary` = boolean token
@@ -95,7 +93,7 @@ Examples for registration name `TelumPluginExecutionProvider`:
 - `ep.TelumPluginExecutionProvider.drop_constant_initializers` = boolean token
 - `ep.context_enable` = `0|1`
 
-Legacy aliases (`telum.backend`, `telum.stub_support_mul`, `telum.drop_constant_initializers`,
+Legacy aliases (`telum.backend`, `telum.drop_constant_initializers`,
 `telum.strict_mode`, `telum.log_fallbacks`, `telum.log_partition_summary`,
 `telum.verbose_partition_trace`, `telum.enable_fusion`) are still accepted.
 

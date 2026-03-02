@@ -14,7 +14,6 @@ constexpr const char* kFieldSchema = "schema";
 constexpr const char* kFieldVersion = "version";
 constexpr const char* kFieldOrtApiVersion = "ort_api_version";
 constexpr const char* kFieldBackend = "backend";
-constexpr const char* kFieldStubSupportMul = "stub_support_mul";
 constexpr const char* kFieldStrictMode = "strict_mode";
 constexpr const char* kFieldDropConstantInitializers = "drop_constant_initializers";
 
@@ -24,7 +23,6 @@ struct Info {
   std::optional<std::string> ep_version;
   std::optional<std::string> ort_api_version;
   std::optional<std::string> backend_kind;
-  std::optional<std::string> stub_support_mul;
   std::optional<std::string> strict_mode;
   std::optional<std::string> drop_constant_initializers;
 };

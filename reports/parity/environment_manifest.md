@@ -8,6 +8,6 @@
 - CMake:
 - ONNX Runtime version:
 - Plugin commit:
-- Backend mode (`stub|zdnn`):
+- Backend mode (`zdnn`):
 - zDNN version (if applicable):
 - NNPA capability summary:

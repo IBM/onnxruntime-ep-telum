@@ -15,11 +15,9 @@
 
 namespace {
 
-constexpr const char* kTelumBackendDefault = "stub";
+constexpr const char* kTelumBackendDefault = "zdnn";
 constexpr const char* kTelumBackendZdnn = "zdnn";
 constexpr const char* kTelumBackendLegacyConfigKey = "telum.backend";
-constexpr const char* kTelumStubSupportMulLegacyConfigKey = "telum.stub_support_mul";
-constexpr bool kTelumStubSupportMulDefault = true;
 constexpr const char* kTelumDropConstantInitializersLegacyConfigKey = "telum.drop_constant_initializers";
 constexpr bool kTelumDropConstantInitializersDefault = true;
 constexpr const char* kTelumStrictModeLegacyConfigKey = "telum.strict_mode";
@@ -69,38 +67,13 @@ OrtStatus* ResolveTelumBackendKind(const OrtApi& api,
   }
 
   backend_kind = GetLowercaseString(std::move(backend_kind));
-  if (backend_kind != kTelumBackendDefault && backend_kind != kTelumBackendZdnn) {
+  if (backend_kind != kTelumBackendZdnn) {
     const std::string msg = "Unsupported Telum plugin backend '" + backend_kind +
-                            "'. Supported backend(s): stub, zdnn";
+                            "'. Supported backend(s): zdnn";
     return api.CreateStatus(ORT_INVALID_ARGUMENT, msg.c_str());
   }
 
   return nullptr;
-}
-
-OrtStatus* ResolveTelumStubSupportMul(const OrtApi& api,
-                                      const OrtSessionOptions& session_options,
-                                      const std::string& ep_name,
-                                      bool& stub_support_mul) {
-  const std::string prefixed_key = "ep." + ep_name + ".stub_support_mul";
-  const std::string default_value = kTelumStubSupportMulDefault ? "1" : "0";
-  std::string configured_value = default_value;
-  std::string configured_key = prefixed_key;
-
-  try {
-    const Ort::ConstSessionOptions sess_opt{&session_options};
-    if (sess_opt.HasConfigEntry(prefixed_key.c_str())) {
-      configured_value = sess_opt.GetConfigEntry(prefixed_key.c_str());
-    } else if (sess_opt.HasConfigEntry(kTelumStubSupportMulLegacyConfigKey)) {
-      configured_value = sess_opt.GetConfigEntry(kTelumStubSupportMulLegacyConfigKey);
-      configured_key = kTelumStubSupportMulLegacyConfigKey;
-    }
-  } catch (const Ort::Exception& ex) {
-    Ort::Status status(ex);
-    return status.release();
-  }
-
-  return ParseBoolConfigValue(api, configured_key, configured_value, stub_support_mul);
 }
 
 OrtStatus* ResolveTelumDropConstantInitializers(const OrtApi& api,
@@ -164,7 +137,7 @@ TelumEpFactory::TelumEpFactory(const char* ep_name, ApiPtrs apis, const OrtLogge
       ep_name_{ep_name},
       default_memory_info_{nullptr},
       readonly_memory_info_{nullptr},
-      custom_op_backend_{CreateTelumBackend(ort_api, TelumBackendConfig{"stub", true})} {
+      custom_op_backend_{CreateTelumBackend(ort_api, TelumBackendConfig{kTelumBackendDefault})} {
   ort_version_supported = ORT_API_VERSION;  // set to the ORT version we were compiled with.
   GetName = GetNameImpl;
   GetVendor = GetVendorImpl;
@@ -191,7 +164,7 @@ TelumEpFactory::TelumEpFactory(const char* ep_name, ApiPtrs apis, const OrtLogge
   GetCustomOpDomains = GetCustomOpDomainsImpl;
   ValidateCompiledModelCompatibilityInfo = ValidateCompiledModelCompatibilityInfoImpl;
 
-  // Initial plugin migration path uses a CPU-accessible allocator and a stub backend.
+  // Current plugin path uses a CPU-accessible allocator and zDNN backend selection.
   default_memory_info_ = Ort::MemoryInfo{"TelumEP",
                                          OrtMemoryInfoDeviceType_CPU,
                                          /*vendor*/ 0x1014, /* device_id */ 0,
@@ -275,7 +248,7 @@ OrtStatus* ORT_API_CALL TelumEpFactory::GetSupportedDevicesImpl(OrtEpFactory* th
       factory->ort_api.CreateKeyValuePairs(&ep_options);
 
       factory->ort_api.AddKeyValuePair(ep_metadata, "supported_devices", "IBM Telum / NNPA");
-      factory->ort_api.AddKeyValuePair(ep_metadata, "migration_stage", "plugin_stub");
+      factory->ort_api.AddKeyValuePair(ep_metadata, "migration_stage", "plugin_zdnn");
       factory->ort_api.AddKeyValuePair(ep_options, "strict_static_shapes", "1");
 
       // OrtEpDevice copies ep_metadata and ep_options.
@@ -354,8 +327,6 @@ OrtStatus* ORT_API_CALL TelumEpFactory::CreateEpImpl(OrtEpFactory* this_ptr,
   RETURN_IF_ERROR(GetSessionConfigEntryOrDefault(*session_options, "ep.context_enable", "0", ep_context_enable));
   std::string backend_kind;
   RETURN_IF_ERROR(ResolveTelumBackendKind(factory->ort_api, *session_options, factory->ep_name_, backend_kind));
-  bool stub_support_mul = kTelumStubSupportMulDefault;
-  RETURN_IF_ERROR(ResolveTelumStubSupportMul(factory->ort_api, *session_options, factory->ep_name_, stub_support_mul));
   bool drop_constant_initializers = kTelumDropConstantInitializersDefault;
   RETURN_IF_ERROR(ResolveTelumDropConstantInitializers(factory->ort_api, *session_options, factory->ep_name_,
                                                        drop_constant_initializers));
@@ -383,7 +354,6 @@ OrtStatus* ORT_API_CALL TelumEpFactory::CreateEpImpl(OrtEpFactory* this_ptr,
   TelumEp::Config config = {};
   config.enable_ep_context = ep_context_enable == "1";
   config.backend_kind = backend_kind;
-  config.stub_support_mul = stub_support_mul;
   config.strict_mode = strict_mode;
   config.log_fallbacks = log_fallbacks;
   config.log_partition_summary = log_partition_summary;
@@ -570,7 +540,7 @@ OrtStatus* ORT_API_CALL TelumEpFactory::GetHardwareDeviceIncompatibilityDetailsI
         details,
         reasons,
         static_cast<int32_t>(device_type),  // Use device type as the error code for testing
-        "TelumPluginEP(stub) only supports CPU devices");
+        "TelumPluginEP(zdnn) only supports CPU devices");
   }
 
   // Device is compatible - details are already initialized with default values by ORT
@@ -628,7 +598,7 @@ OrtStatus* ORT_API_CALL TelumEpFactory::ValidateCompiledModelCompatibilityInfoIm
   }
 
   // Current format:
-  // "<ep_name>;version=X;ort_api_version=Y;backend=Z;stub_support_mul=B"
+  // "<ep_name>;version=X;ort_api_version=Y;backend=Z"
   //
   // For backward compatibility we only require version.
   if (!parsed_info.ep_version.has_value()) {
@@ -656,21 +626,7 @@ OrtStatus* ORT_API_CALL TelumEpFactory::ValidateCompiledModelCompatibilityInfoIm
   // Check backend kind if present.
   if (parsed_info.backend_kind.has_value()) {
     const std::string backend_kind = GetLowercaseString(*parsed_info.backend_kind);
-    if (backend_kind != kTelumBackendDefault && backend_kind != kTelumBackendZdnn) {
-      *model_compatibility = OrtCompiledModelCompatibility_EP_UNSUPPORTED;
-      return nullptr;
-    }
-    // Backend choice affects partitioning, so prefer recompilation across different runtime choices.
-    if (backend_kind != kTelumBackendDefault) {
-      *model_compatibility = OrtCompiledModelCompatibility_EP_SUPPORTED_PREFER_RECOMPILATION;
-      return nullptr;
-    }
-  }
-
-  // Validate stub capability field format if present.
-  if (parsed_info.stub_support_mul.has_value()) {
-    bool parsed_bool = false;
-    if (!telum_compat::TryParseBoolToken(*parsed_info.stub_support_mul, parsed_bool)) {
+    if (backend_kind != kTelumBackendZdnn) {
       *model_compatibility = OrtCompiledModelCompatibility_EP_UNSUPPORTED;
       return nullptr;
     }
