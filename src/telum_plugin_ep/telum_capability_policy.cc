@@ -37,11 +37,33 @@ bool IsStaticShape(gsl::span<const int64_t> shape) {
   return std::all_of(shape.begin(), shape.end(), [](int64_t d) { return d >= 0; });
 }
 
+bool IsShapeWithinMaxDim(gsl::span<const int64_t> shape, uint32_t max_dim_idx_size) {
+  if (max_dim_idx_size == 0) {
+    return true;
+  }
+
+  for (int64_t d : shape) {
+    if (d < 0 || static_cast<uint64_t>(d) > static_cast<uint64_t>(max_dim_idx_size)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 bool IsSupportedCastType(ONNXTensorElementDataType type) {
   return type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+         type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 ||
+         type == ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16 ||
          type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32 ||
          type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 ||
          type == ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL;
+}
+
+bool IsSupportedDataTensorType(ONNXTensorElementDataType type) {
+  return type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+         type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 ||
+         type == ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16;
 }
 
 template <typename T>
@@ -143,6 +165,31 @@ bool IsTensorStaticAndType(Ort::ConstValueInfo value_info,
   return true;
 }
 
+bool IsTensorStaticAndDataType(Ort::ConstValueInfo value_info, std::string& error) {
+  ONNXTensorElementDataType actual = ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+  std::vector<int64_t> shape;
+  bool is_tensor = false;
+  TryGetTensorShapeAndType(value_info, actual, shape, is_tensor);
+  if (!is_tensor) {
+    error = "expected tensor";
+    return false;
+  }
+
+  if (!IsStaticShape(shape)) {
+    error = "requires static shape";
+    return false;
+  }
+
+  if (!IsSupportedDataTensorType(actual)) {
+    std::ostringstream os;
+    os << "expected float/fp16/bf16 type, got " << static_cast<int>(actual);
+    error = os.str();
+    return false;
+  }
+
+  return true;
+}
+
 bool CheckDefaultFloatInputsOutputs(const std::vector<Ort::ConstValueInfo>& inputs,
                                     const std::vector<Ort::ConstValueInfo>& outputs,
                                     std::string& error) {
@@ -218,15 +265,18 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
 
   decision.op_kind = op_kind;
 
-  if (telum::OpUsesNnpaGating(op_kind)) {
-    if (!backend.SupportsOp(op_kind)) {
-      return Reject(TelumCapabilityRejectReason::kBackendCapabilityUnavailable,
-                    "NNPA/zDNN capability unavailable for op " + op_type);
-    }
+  // Ops with mandatory NNPA/zDNN execution paths must be rejected if the backend
+  // cannot execute them. Other ops are admitted and run through the plugin CPU path.
+  const bool requires_backend = telum::OpUsesNnpaGating(op_kind);
+  const bool backend_supports = backend.SupportsOp(op_kind);
+  if (requires_backend && !backend_supports) {
+    return Reject(TelumCapabilityRejectReason::kBackendCapabilityUnavailable,
+                  "No backend execution is available for op " + op_type);
   }
 
   const std::vector<Ort::ConstValueInfo> inputs = node.GetInputs();
   const std::vector<Ort::ConstValueInfo> outputs = node.GetOutputs();
+  const uint32_t max_dim_idx_size = backend.MaxDimIdxSize();
 
   auto reject_type = [&](const std::string& reason) {
     return Reject(TelumCapabilityRejectReason::kNonTensorOrTypeMismatch, reason);
@@ -257,16 +307,61 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
         return reject_shape("MatMul requires static input shapes");
       }
       if (a_shape->size() < 2 || b_shape->size() < 2) {
-        return reject_constraint("MatMul requires rank >= 2");
+        return reject_constraint("MatMul requires rank >= 2 tensors");
       }
-      if ((*a_shape)[a_shape->size() - 1] != (*b_shape)[b_shape->size() - 2]) {
+
+      const int64_t m = (*a_shape)[a_shape->size() - 2];
+      const int64_t k_a = (*a_shape)[a_shape->size() - 1];
+      const int64_t k_b = (*b_shape)[b_shape->size() - 2];
+      const int64_t n = (*b_shape)[b_shape->size() - 1];
+      if (m <= 0 || n <= 0 || k_a <= 0 || k_b <= 0) {
+        return reject_constraint("MatMul requires positive static dimensions");
+      }
+      if (k_a != k_b) {
         return reject_constraint("MatMul K dimensions must match");
       }
-      std::vector<int64_t> out_batch;
+
       std::vector<int64_t> a_batch(a_shape->begin(), a_shape->end() - 2);
       std::vector<int64_t> b_batch(b_shape->begin(), b_shape->end() - 2);
+      std::vector<int64_t> out_batch;
       if (!ComputeBroadcastShape({a_batch, b_batch}, out_batch)) {
         return reject_constraint("MatMul batch dimensions are not broadcast-compatible");
+      }
+
+      int64_t stack = 1;
+      for (int64_t d : out_batch) {
+        if (d <= 0 || stack > std::numeric_limits<int64_t>::max() / d) {
+          return reject_constraint("MatMul stack dimension overflow/invalid");
+        }
+        stack *= d;
+      }
+
+      if (!IsShapeWithinMaxDim(*a_shape, max_dim_idx_size) || !IsShapeWithinMaxDim(*b_shape, max_dim_idx_size) ||
+          !IsShapeWithinMaxDim(gsl::span<const int64_t>(&m, 1), max_dim_idx_size) ||
+          !IsShapeWithinMaxDim(gsl::span<const int64_t>(&k_a, 1), max_dim_idx_size) ||
+          !IsShapeWithinMaxDim(gsl::span<const int64_t>(&n, 1), max_dim_idx_size) ||
+          !IsShapeWithinMaxDim(gsl::span<const int64_t>(&stack, 1), max_dim_idx_size)) {
+        return reject_constraint("MatMul dimensions exceed NNPA max_dim_idx_size");
+      }
+
+      auto align_batch = [](const std::vector<int64_t>& batch, size_t target_rank) -> std::vector<int64_t> {
+        if (batch.size() >= target_rank) return batch;
+        std::vector<int64_t> aligned(target_rank - batch.size(), 1);
+        aligned.insert(aligned.end(), batch.begin(), batch.end());
+        return aligned;
+      };
+      auto all_ones = [](const std::vector<int64_t>& dims) {
+        return std::all_of(dims.begin(), dims.end(), [](int64_t d) { return d == 1; });
+      };
+
+      const auto a_aligned = align_batch(a_batch, out_batch.size());
+      const auto b_aligned = align_batch(b_batch, out_batch.size());
+      const bool a_matches = (a_aligned == out_batch);
+      const bool b_matches = (b_aligned == out_batch);
+      const bool a_all_ones = all_ones(a_aligned);
+      const bool b_all_ones = all_ones(b_aligned);
+      if (!(a_matches && b_matches) && !(a_matches && b_all_ones) && !(a_all_ones && b_matches)) {
+        return reject_constraint("MatMul supports only unstacked, stacked, or fully-unstacked broadcast operand patterns");
       }
       break;
     }
@@ -290,10 +385,48 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
       if (!CheckDefaultFloatInputsOutputs({inputs[0], inputs[1]}, outputs, type_error)) {
         return reject_type(type_error);
       }
+
+      int64_t trans_a = 0;
+      int64_t trans_b = 0;
+      float alpha = 1.0f;
+      float beta = 1.0f;
+      (void)TryParseScalarAttr(node, "transA", trans_a);
+      (void)TryParseScalarAttr(node, "transB", trans_b);
+      (void)TryParseScalarAttr(node, "alpha", alpha);
+      (void)TryParseScalarAttr(node, "beta", beta);
+      if (alpha != 1.0f || beta != 1.0f) {
+        return reject_constraint("Gemm currently supports alpha=1 and beta=1 only");
+      }
+
+      auto a_shape = GetTensorShape(inputs[0]);
+      auto b_shape = GetTensorShape(inputs[1]);
+      const int64_t a_rows = trans_a ? (*a_shape)[1] : (*a_shape)[0];
+      const int64_t a_cols = trans_a ? (*a_shape)[0] : (*a_shape)[1];
+      const int64_t b_rows = trans_b ? (*b_shape)[1] : (*b_shape)[0];
+      const int64_t b_cols = trans_b ? (*b_shape)[0] : (*b_shape)[1];
+      if (a_cols != b_rows) {
+        return reject_constraint("Gemm K dimensions mismatch");
+      }
+      const std::array<int64_t, 2> out_dims{a_rows, b_cols};
+      if (!IsShapeWithinMaxDim(*a_shape, max_dim_idx_size) ||
+          !IsShapeWithinMaxDim(*b_shape, max_dim_idx_size) ||
+          !IsShapeWithinMaxDim(gsl::span<const int64_t>(out_dims.data(), out_dims.size()), max_dim_idx_size)) {
+        return reject_constraint("Gemm dimensions exceed NNPA max_dim_idx_size");
+      }
+
       if (inputs.size() > 2 && !inputs[2].GetName().empty()) {
         TryGetTensorShapeAndType(inputs[2], t, s, is_tensor);
         if (!is_tensor || t != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT || !IsStaticShape(s)) {
           return reject_type("Gemm input C must be static float tensor");
+        }
+
+        // Current backend supports C as scalar, [N], or [1,N].
+        const int64_t n = b_cols;
+        const bool is_scalar = s.empty() || (s.size() == 1 && s[0] == 1) ||
+                               (s.size() == 2 && s[0] == 1 && s[1] == 1);
+        const bool is_vector = (s.size() == 1 && s[0] == n) || (s.size() == 2 && s[0] == 1 && s[1] == n);
+        if (!is_scalar && !is_vector) {
+          return reject_constraint("Gemm C currently supports scalar, [N], or [1,N]");
         }
       }
       break;
@@ -316,12 +449,19 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
       if (!a_shape.has_value() || !b_shape.has_value() || !IsStaticShape(*a_shape) || !IsStaticShape(*b_shape)) {
         return reject_shape("Elementwise op requires static input shapes");
       }
+      // Current zDNN backend path is equal-shape only. Broadcast stays on CPU EPs.
+      if (*a_shape != *b_shape) {
+        return reject_constraint("Elementwise backend path requires equal-shape inputs");
+      }
       std::vector<int64_t> out_shape;
       if (!ComputeBroadcastShape({*a_shape, *b_shape}, out_shape)) {
         return reject_constraint("Elementwise op inputs are not ONNX-broadcast-compatible");
       }
       if (out_shape.size() > 4) {
         return reject_constraint("Elementwise op output rank > 4 is not supported");
+      }
+      if (!IsShapeWithinMaxDim(out_shape, max_dim_idx_size)) {
+        return reject_constraint("Elementwise dimensions exceed NNPA max_dim_idx_size");
       }
       break;
     }
@@ -340,16 +480,36 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
       if (!CheckDefaultFloatInputsOutputs(inputs, outputs, type_error)) {
         return reject_type(type_error);
       }
+      const auto shape = GetTensorShape(inputs[0]);
+      if (!shape.has_value() || !IsStaticShape(*shape)) {
+        return reject_shape("Unary activation op requires static input shape");
+      }
+      if (!IsShapeWithinMaxDim(*shape, max_dim_idx_size)) {
+        return reject_constraint("Unary activation dimensions exceed NNPA max_dim_idx_size");
+      }
       if (op_kind == telum::OpKind::kSoftmax) {
         int64_t axis = -1;
         TryParseScalarAttr(node, "axis", axis);
-        const auto shape = GetTensorShape(inputs[0]);
-        if (!shape.has_value() || shape->empty()) {
+        if (shape->empty()) {
           return reject_shape("Softmax requires static rank >= 1");
         }
         const int64_t normalized = NormalizeAxis(axis, shape->size());
         if (normalized != static_cast<int64_t>(shape->size() - 1)) {
           return reject_constraint("Softmax currently supports axis on the last dimension only");
+        }
+
+        int64_t batch = 1;
+        for (size_t i = 0; i + 1 < shape->size(); ++i) {
+          if (batch > std::numeric_limits<int64_t>::max() / (*shape)[i]) {
+            return reject_constraint("Softmax batch dimension overflow");
+          }
+          batch *= (*shape)[i];
+        }
+        const int64_t vector_len = shape->back();
+        const std::array<int64_t, 3> logical_dims{batch, 1, vector_len};
+        if (!IsShapeWithinMaxDim(gsl::span<const int64_t>(logical_dims.data(), logical_dims.size()),
+                                 max_dim_idx_size)) {
+          return reject_constraint("Softmax logical dimensions exceed NNPA max_dim_idx_size");
         }
       }
       break;
@@ -386,6 +546,31 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
       if (normalized != static_cast<int64_t>(x_shape->size() - 1)) {
         return reject_constraint("LayerNormalization currently supports last-dimension axis only");
       }
+
+      const int64_t c = x_shape->back();
+      auto scale_shape = GetTensorShape(inputs[1]);
+      if (!scale_shape.has_value() || scale_shape->size() != 1 || (*scale_shape)[0] != c) {
+        return reject_constraint("LayerNormalization requires Scale shape [C]");
+      }
+      if (inputs.size() > 2 && !inputs[2].GetName().empty()) {
+        auto bias_shape = GetTensorShape(inputs[2]);
+        if (!bias_shape.has_value() || bias_shape->size() != 1 || (*bias_shape)[0] != c) {
+          return reject_constraint("LayerNormalization requires Bias shape [C] when provided");
+        }
+      }
+
+      int64_t n = 1;
+      for (size_t i = 0; i + 1 < x_shape->size(); ++i) {
+        if (n > std::numeric_limits<int64_t>::max() / (*x_shape)[i]) {
+          return reject_constraint("LayerNormalization batch dimension overflow");
+        }
+        n *= (*x_shape)[i];
+      }
+      const std::array<int64_t, 2> logical_dims{n, c};
+      if (!IsShapeWithinMaxDim(gsl::span<const int64_t>(logical_dims.data(), logical_dims.size()),
+                               max_dim_idx_size)) {
+        return reject_constraint("LayerNormalization logical dimensions exceed NNPA max_dim_idx_size");
+      }
       break;
     }
 
@@ -395,7 +580,7 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
         return reject_constraint(op_kind == telum::OpKind::kReshape ?
                                  "Reshape requires 2 inputs" : "Expand requires 2 inputs");
       }
-      if (!IsTensorStaticAndType(inputs[0], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error)) {
+      if (!IsTensorStaticAndDataType(inputs[0], type_error)) {
         return reject_type(type_error);
       }
       ONNXTensorElementDataType t{};
@@ -406,8 +591,17 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
           (t != ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 && t != ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32)) {
         return reject_type("Shape input must be static int32/int64 tensor");
       }
-      if (!IsTensorStaticAndType(outputs[0], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error)) {
+      if (!IsTensorStaticAndDataType(outputs[0], type_error)) {
         return reject_type(type_error);
+      }
+      ONNXTensorElementDataType in_type{};
+      ONNXTensorElementDataType out_type{};
+      std::vector<int64_t> ignored_shape;
+      bool is_tensor_match = false;
+      TryGetTensorShapeAndType(inputs[0], in_type, ignored_shape, is_tensor_match);
+      TryGetTensorShapeAndType(outputs[0], out_type, ignored_shape, is_tensor_match);
+      if (!is_tensor_match || in_type != out_type) {
+        return reject_type("Reshape/Expand output type must match input type");
       }
       break;
     }
@@ -416,8 +610,18 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
       if (inputs.size() != 1 || outputs.size() != 1) {
         return reject_constraint("Transpose requires 1 input and 1 output");
       }
-      if (!CheckDefaultFloatInputsOutputs(inputs, outputs, type_error)) {
+      if (!IsTensorStaticAndDataType(inputs[0], type_error) ||
+          !IsTensorStaticAndDataType(outputs[0], type_error)) {
         return reject_type(type_error);
+      }
+      ONNXTensorElementDataType in_type{};
+      ONNXTensorElementDataType out_type{};
+      std::vector<int64_t> ignored_shape;
+      bool is_tensor = false;
+      TryGetTensorShapeAndType(inputs[0], in_type, ignored_shape, is_tensor);
+      TryGetTensorShapeAndType(outputs[0], out_type, ignored_shape, is_tensor);
+      if (!is_tensor || in_type != out_type) {
+        return reject_type("Transpose input/output types must match");
       }
       auto in_shape = GetTensorShape(inputs[0]);
       if (!in_shape.has_value() || !IsStaticShape(*in_shape)) {
@@ -443,9 +647,18 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
       if (inputs.empty() || outputs.size() != 1) {
         return reject_constraint("Squeeze/Unsqueeze requires at least input X and 1 output");
       }
-      if (!IsTensorStaticAndType(inputs[0], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error) ||
-          !IsTensorStaticAndType(outputs[0], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error)) {
+      if (!IsTensorStaticAndDataType(inputs[0], type_error) ||
+          !IsTensorStaticAndDataType(outputs[0], type_error)) {
         return reject_type(type_error);
+      }
+      ONNXTensorElementDataType in_type{};
+      ONNXTensorElementDataType out_type{};
+      std::vector<int64_t> ignored_shape;
+      bool is_tensor = false;
+      TryGetTensorShapeAndType(inputs[0], in_type, ignored_shape, is_tensor);
+      TryGetTensorShapeAndType(outputs[0], out_type, ignored_shape, is_tensor);
+      if (!is_tensor || in_type != out_type) {
+        return reject_type("Squeeze/Unsqueeze input/output types must match");
       }
       if (inputs.size() > 1 && !inputs[1].GetName().empty()) {
         ONNXTensorElementDataType t{};
@@ -464,9 +677,18 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
       if (inputs.empty() || outputs.size() != 1) {
         return reject_constraint("ReduceMean requires input X and one output");
       }
-      if (!IsTensorStaticAndType(inputs[0], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error) ||
-          !IsTensorStaticAndType(outputs[0], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error)) {
+      if (!IsTensorStaticAndDataType(inputs[0], type_error) ||
+          !IsTensorStaticAndDataType(outputs[0], type_error)) {
         return reject_type(type_error);
+      }
+      ONNXTensorElementDataType in_type{};
+      ONNXTensorElementDataType out_type{};
+      std::vector<int64_t> ignored_shape;
+      bool is_tensor = false;
+      TryGetTensorShapeAndType(inputs[0], in_type, ignored_shape, is_tensor);
+      TryGetTensorShapeAndType(outputs[0], out_type, ignored_shape, is_tensor);
+      if (!is_tensor || in_type != out_type) {
+        return reject_type("ReduceMean output type must match input type");
       }
       if (inputs.size() > 1 && !inputs[1].GetName().empty()) {
         ONNXTensorElementDataType t{};
@@ -507,10 +729,22 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
       if (!IsTensorStaticAndType(inputs[0], ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL, type_error)) {
         return reject_type("Where condition must be static bool tensor");
       }
-      if (!IsTensorStaticAndType(inputs[1], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error) ||
-          !IsTensorStaticAndType(inputs[2], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error) ||
-          !IsTensorStaticAndType(outputs[0], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error)) {
-        return reject_type("Where data tensors must be static float");
+      if (!IsTensorStaticAndDataType(inputs[1], type_error) ||
+          !IsTensorStaticAndDataType(inputs[2], type_error) ||
+          !IsTensorStaticAndDataType(outputs[0], type_error)) {
+        return reject_type("Where data tensors must be static float/fp16/bf16");
+      }
+
+      ONNXTensorElementDataType x_type{};
+      ONNXTensorElementDataType y_type{};
+      ONNXTensorElementDataType out_type{};
+      std::vector<int64_t> tmp_shape;
+      bool is_tensor = false;
+      TryGetTensorShapeAndType(inputs[1], x_type, tmp_shape, is_tensor);
+      TryGetTensorShapeAndType(inputs[2], y_type, tmp_shape, is_tensor);
+      TryGetTensorShapeAndType(outputs[0], out_type, tmp_shape, is_tensor);
+      if (x_type != y_type || x_type != out_type) {
+        return reject_type("Where requires X/Y/Output to share the same data type");
       }
       auto c = GetTensorShape(inputs[0]);
       auto x = GetTensorShape(inputs[1]);
@@ -530,22 +764,31 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
       int64_t axis = 0;
       TryParseScalarAttr(node, "axis", axis);
       std::vector<int64_t> base_shape;
+      ONNXTensorElementDataType base_type = ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
       bool have_shape = false;
       for (const auto& input : inputs) {
         if (input.GetName().empty()) {
           continue;
         }
-        if (!IsTensorStaticAndType(input, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error)) {
+        if (!IsTensorStaticAndDataType(input, type_error)) {
           return reject_type(type_error);
         }
         auto shape = GetTensorShape(input);
         if (!shape.has_value() || !IsStaticShape(*shape)) {
           return reject_shape("Concat requires static input shapes");
         }
+        ONNXTensorElementDataType cur_type{};
+        bool is_tensor = false;
+        std::vector<int64_t> ignored_shape;
+        TryGetTensorShapeAndType(input, cur_type, ignored_shape, is_tensor);
         if (!have_shape) {
           base_shape = *shape;
+          base_type = cur_type;
           have_shape = true;
           continue;
+        }
+        if (cur_type != base_type) {
+          return reject_type("Concat inputs must all have the same element type");
         }
         if (shape->size() != base_shape.size()) {
           return reject_constraint("Concat input ranks must match");
@@ -568,8 +811,15 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
           }
         }
       }
-      if (!IsTensorStaticAndType(outputs[0], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error)) {
+      if (!IsTensorStaticAndDataType(outputs[0], type_error)) {
         return reject_type(type_error);
+      }
+      ONNXTensorElementDataType out_type{};
+      std::vector<int64_t> ignored_shape;
+      bool is_tensor = false;
+      TryGetTensorShapeAndType(outputs[0], out_type, ignored_shape, is_tensor);
+      if (!is_tensor || out_type != base_type) {
+        return reject_type("Concat output type must match concat input type");
       }
       break;
     }
@@ -578,8 +828,8 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
       if (inputs.size() != 2 || outputs.size() != 1) {
         return reject_constraint("Gather requires 2 inputs and 1 output");
       }
-      if (!IsTensorStaticAndType(inputs[0], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error)) {
-        return reject_type("Gather data must be static float tensor");
+      if (!IsTensorStaticAndDataType(inputs[0], type_error)) {
+        return reject_type("Gather data must be static float/fp16/bf16 tensor");
       }
       ONNXTensorElementDataType idx_t{};
       std::vector<int64_t> idx_shape;
@@ -589,8 +839,17 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
           (idx_t != ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32 && idx_t != ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64)) {
         return reject_type("Gather indices must be static int32/int64 tensor");
       }
-      if (!IsTensorStaticAndType(outputs[0], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error)) {
+      if (!IsTensorStaticAndDataType(outputs[0], type_error)) {
         return reject_type(type_error);
+      }
+      ONNXTensorElementDataType data_type{};
+      ONNXTensorElementDataType out_type{};
+      std::vector<int64_t> ignored_shape;
+      bool is_tensor_match = false;
+      TryGetTensorShapeAndType(inputs[0], data_type, ignored_shape, is_tensor_match);
+      TryGetTensorShapeAndType(outputs[0], out_type, ignored_shape, is_tensor_match);
+      if (!is_tensor_match || data_type != out_type) {
+        return reject_type("Gather output type must match data input type");
       }
       break;
     }
@@ -599,9 +858,18 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
       if (inputs.size() < 3 || outputs.size() != 1) {
         return reject_constraint("Slice requires at least 3 inputs and 1 output");
       }
-      if (!IsTensorStaticAndType(inputs[0], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error) ||
-          !IsTensorStaticAndType(outputs[0], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, type_error)) {
+      if (!IsTensorStaticAndDataType(inputs[0], type_error) ||
+          !IsTensorStaticAndDataType(outputs[0], type_error)) {
         return reject_type(type_error);
+      }
+      ONNXTensorElementDataType data_type{};
+      ONNXTensorElementDataType out_type{};
+      std::vector<int64_t> ignored_shape;
+      bool is_tensor = false;
+      TryGetTensorShapeAndType(inputs[0], data_type, ignored_shape, is_tensor);
+      TryGetTensorShapeAndType(outputs[0], out_type, ignored_shape, is_tensor);
+      if (!is_tensor || data_type != out_type) {
+        return reject_type("Slice output type must match data input type");
       }
       for (size_t i = 1; i < std::min<size_t>(inputs.size(), 5); ++i) {
         if (inputs[i].GetName().empty()) continue;
@@ -622,6 +890,11 @@ TelumCapabilityNodeDecision EvaluateTelumCapabilityNode(const OrtApi& ort_api,
   }
 
   decision.disposition = TelumCapabilityNodeDisposition::kFuseNode;
+  if (backend_supports) {
+    decision.reject_detail = "backend execution eligible";
+  } else {
+    decision.reject_detail = "accepted on plugin CPU kernel path (no backend fast-path)";
+  }
   return decision;
 }
 

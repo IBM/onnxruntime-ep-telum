@@ -119,15 +119,13 @@ OrtStatus* TelumEp::SaveConstantInitializers(gsl::span<const Ort::ConstValueInfo
 
   try {
     for (const auto& value_info : value_infos) {
-      if (!value_info.IsConstantInitializer()) {
-        continue;
-      }
-
       const std::string name = value_info.GetName();
       Ort::ConstValue value;
       Ort::Status status = value_info.GetInitializer(value);
       if (!status.IsOK()) {
-        return status.release();
+        // Some graph views do not expose the constant bit consistently for dropped initializers.
+        // Skip values that do not provide an initializer payload in this context.
+        continue;
       }
 
       telum::TensorInitializer initializer{};
@@ -158,10 +156,9 @@ OrtStatus* ORT_API_CALL TelumEp::GetCapabilityImpl(OrtEp* this_ptr,
       return nullptr;
     }
 
-    const OrtNode* supported_node = nullptr;
-    TelumCapabilityNodeDisposition selected_disposition = TelumCapabilityNodeDisposition::kUnsupported;
-    TelumCapabilityNodeDecision selected_decision{};
-    std::string selected_op_type;
+    std::vector<const OrtNode*> supported_nodes;
+    std::vector<TelumCapabilityNodeDecision> supported_decisions;
+    std::vector<std::string> supported_op_types;
 
     TelumCapabilityStats stats{};
 
@@ -175,11 +172,10 @@ OrtStatus* ORT_API_CALL TelumEp::GetCapabilityImpl(OrtEp* this_ptr,
       }
 
       if (decision.disposition != TelumCapabilityNodeDisposition::kUnsupported) {
-        supported_node = node;
-        selected_disposition = decision.disposition;
-        selected_decision = decision;
-        selected_op_type = node.GetOperatorType();
-        break;
+        supported_nodes.push_back(node);
+        supported_decisions.push_back(decision);
+        supported_op_types.push_back(node.GetOperatorType());
+        continue;
       }
 
       if (ep->config_.strict_mode && decision.op_kind != telum::OpKind::kUnknown &&
@@ -191,7 +187,7 @@ OrtStatus* ORT_API_CALL TelumEp::GetCapabilityImpl(OrtEp* this_ptr,
       }
     }
 
-    const size_t num_supported = supported_node != nullptr ? 1 : 0;
+    const size_t num_supported = supported_nodes.size();
     const size_t num_fallback =
         stats.num_nodes_considered >= num_supported ? (stats.num_nodes_considered - num_supported) : 0;
 
@@ -214,28 +210,33 @@ OrtStatus* ORT_API_CALL TelumEp::GetCapabilityImpl(OrtEp* this_ptr,
           os.str().c_str(), ORT_FILE, __LINE__, __FUNCTION__));
     }
 
-    if (supported_node == nullptr) {
+    if (supported_nodes.empty()) {
       return nullptr;
     }
 
     if (ep->config_.verbose_partition_trace) {
-      std::ostringstream trace;
-      trace << "Telum partition selection: op='" << selected_op_type << "'"
-            << ", reason='" << selected_decision.reject_detail << "'";
-      IGNORE_ORTSTATUS(ep->ort_api.Logger_LogMessage(
-          &ep->logger_, ORT_LOGGING_LEVEL_INFO, trace.str().c_str(), ORT_FILE, __LINE__, __FUNCTION__));
+      for (size_t i = 0; i < supported_nodes.size(); ++i) {
+        std::ostringstream trace;
+        trace << "Telum partition selection: op='" << supported_op_types[i] << "'"
+              << ", reason='" << supported_decisions[i].reject_detail << "'";
+        IGNORE_ORTSTATUS(ep->ort_api.Logger_LogMessage(
+            &ep->logger_, ORT_LOGGING_LEVEL_INFO, trace.str().c_str(), ORT_FILE, __LINE__, __FUNCTION__));
+      }
     }
 
-    if (selected_disposition == TelumCapabilityNodeDisposition::kSingleNode) {
-      RETURN_IF_ERROR(ep->ep_api.EpGraphSupportInfo_AddSingleNode(graph_support_info, supported_node));
-    } else {
-      OrtNodeFusionOptions node_fusion_options = {};
-      node_fusion_options.ort_version_supported = ORT_API_VERSION;
-      node_fusion_options.drop_constant_initializers = ep->config_.drop_constant_initializers;
+    for (size_t i = 0; i < supported_nodes.size(); ++i) {
+      const auto disposition = supported_decisions[i].disposition;
+      if (disposition == TelumCapabilityNodeDisposition::kSingleNode) {
+        RETURN_IF_ERROR(ep->ep_api.EpGraphSupportInfo_AddSingleNode(graph_support_info, supported_nodes[i]));
+      } else {
+        OrtNodeFusionOptions node_fusion_options = {};
+        node_fusion_options.ort_version_supported = ORT_API_VERSION;
+        node_fusion_options.drop_constant_initializers = ep->config_.drop_constant_initializers;
 
-      const OrtNode* nodes_to_fuse[] = {supported_node};
-      RETURN_IF_ERROR(ep->ep_api.EpGraphSupportInfo_AddNodesToFuse(
-          graph_support_info, nodes_to_fuse, 1, &node_fusion_options));
+        const OrtNode* nodes_to_fuse[] = {supported_nodes[i]};
+        RETURN_IF_ERROR(ep->ep_api.EpGraphSupportInfo_AddNodesToFuse(
+            graph_support_info, nodes_to_fuse, 1, &node_fusion_options));
+      }
     }
 
     return nullptr;
@@ -258,96 +259,108 @@ OrtStatus* ORT_API_CALL TelumEp::CompileImpl(_In_ OrtEp* this_ptr,
     telum_profile::ScopedEvent profile{telum_profile::Event::kCompileImpl};
     auto* ep = static_cast<TelumEp*>(this_ptr);
 
-    if (count != 1) {
-      return Ort::Status("Expected to compile exactly one graph partition", ORT_EP_FAIL).release();
-    }
-
-    Ort::ConstGraph graph{ort_graphs[0]};
-    std::vector<Ort::ConstNode> nodes = graph.GetNodes();
-    if (nodes.size() != 1) {
-      return Ort::Status("Expected to compile a single node graph", ORT_EP_FAIL).release();
-    }
-
-    const Ort::ConstNode node = nodes[0];
-    const std::string node_op_type = node.GetOperatorType();
-    const std::string node_domain = node.GetDomain();
-
-    const bool is_ep_context_node = (node_op_type == "EPContext" && node_domain == "com.microsoft");
-    if (ep->config_.enable_ep_context && is_ep_context_node) {
-      return Ort::Status(
-                 "Invalid configuration: 'enable_ep_context=1' cannot be used when compiling existing EPContext nodes",
-                 ORT_INVALID_ARGUMENT)
-          .release();
-    }
-
-    Ort::ConstNode fused_node{fused_nodes[0]};
-    if (fused_node.GetEpName() != ep->name_) {
-      return Ort::Status("Compiled node is not assigned to this EP", ORT_EP_FAIL).release();
-    }
-
-    const std::string fused_node_name = fused_node.GetName();
-
-    OrtStatus* kernel_status = nullptr;
-    std::unique_ptr<telum::CompiledNodeKernel> compiled_kernel;
-
-    if (is_ep_context_node) {
-      Ort::ConstOpAttr ep_cache_context_attr;
-      Ort::Status attr_status = node.GetAttributeByName("ep_cache_context", ep_cache_context_attr);
-      if (!attr_status.IsOK()) {
-        return ep->ort_api.CreateStatus(ORT_INVALID_ARGUMENT,
-                                        "EPContext node is missing required ep_cache_context attribute");
+    for (size_t i = 0; i < count; ++i) {
+      node_compute_infos[i] = nullptr;
+      if (ep_context_nodes != nullptr) {
+        ep_context_nodes[i] = nullptr;
       }
 
-      std::string ep_cache_context;
-      attr_status = ep_cache_context_attr.GetValue(ep_cache_context);
-      if (!attr_status.IsOK()) {
-        return ep->ort_api.CreateStatus(ORT_INVALID_ARGUMENT,
-                                        "EPContext node has invalid ep_cache_context attribute value");
+      Ort::ConstGraph graph{ort_graphs[i]};
+      std::vector<Ort::ConstNode> nodes = graph.GetNodes();
+      if (nodes.size() != 1) {
+        std::ostringstream os;
+        os << "Expected a single node partition for CompileImpl, got " << nodes.size()
+           << " at partition index " << i;
+        return ep->ort_api.CreateStatus(ORT_EP_FAIL, os.str().c_str());
       }
 
-      telum_ep_context::EpCacheContext parsed_ctx{};
-      RETURN_IF_ERROR(telum_ep_context::ParseEpCacheContext(ep->ort_api, ep_cache_context, parsed_ctx));
+      const Ort::ConstNode node = nodes[0];
+      const std::string node_op_type = node.GetOperatorType();
+      const std::string node_domain = node.GetDomain();
 
-      compiled_kernel = telum::CreateCompiledNodeKernelFromEpContext(
-          ep->ort_api, ep->logger_, ep->Backend(),
-          telum::KernelConfig{ep->config_.log_fallbacks, ep->config_.strict_mode},
-          parsed_ctx.op_type, parsed_ctx.attributes_blob, parsed_ctx.input_names, parsed_ctx.initializers,
-          ep->config_.drop_constant_initializers, kernel_status);
-      if (kernel_status != nullptr) {
-        return kernel_status;
+      const bool is_ep_context_node = (node_op_type == "EPContext" && node_domain == "com.microsoft");
+      if (ep->config_.enable_ep_context && is_ep_context_node) {
+        return Ort::Status(
+                   "Invalid configuration: 'enable_ep_context=1' cannot be used when compiling existing EPContext nodes",
+                   ORT_INVALID_ARGUMENT)
+            .release();
       }
-    } else {
-      std::vector<Ort::ConstValueInfo> node_inputs = node.GetInputs();
-      if (ep->config_.drop_constant_initializers) {
-        RETURN_IF_ERROR(ep->SaveConstantInitializers(
-            gsl::span<const Ort::ConstValueInfo>{node_inputs.data(), node_inputs.size()}));
+
+      Ort::ConstNode fused_node{fused_nodes[i]};
+      if (fused_node.GetEpName() != ep->name_) {
+        return Ort::Status("Compiled node is not assigned to this EP", ORT_EP_FAIL).release();
+      }
+
+      const std::string fused_node_name = fused_node.GetName();
+
+      OrtStatus* kernel_status = nullptr;
+      std::unique_ptr<telum::CompiledNodeKernel> compiled_kernel;
+
+      if (is_ep_context_node) {
+        Ort::ConstOpAttr ep_cache_context_attr;
+        Ort::Status attr_status = node.GetAttributeByName("ep_cache_context", ep_cache_context_attr);
+        if (!attr_status.IsOK()) {
+          return ep->ort_api.CreateStatus(ORT_INVALID_ARGUMENT,
+                                          "EPContext node is missing required ep_cache_context attribute");
+        }
+
+        std::string ep_cache_context;
+        attr_status = ep_cache_context_attr.GetValue(ep_cache_context);
+        if (!attr_status.IsOK()) {
+          return ep->ort_api.CreateStatus(ORT_INVALID_ARGUMENT,
+                                          "EPContext node has invalid ep_cache_context attribute value");
+        }
+
+        telum_ep_context::EpCacheContext parsed_ctx{};
+        RETURN_IF_ERROR(telum_ep_context::ParseEpCacheContext(ep->ort_api, ep_cache_context, parsed_ctx));
+
+        compiled_kernel = telum::CreateCompiledNodeKernelFromEpContext(
+            ep->ort_api, ep->logger_, ep->Backend(),
+            telum::KernelConfig{ep->config_.log_fallbacks, ep->config_.strict_mode},
+            parsed_ctx.op_type, parsed_ctx.attributes_blob, parsed_ctx.input_names, parsed_ctx.initializers,
+            ep->config_.drop_constant_initializers, kernel_status);
+        if (kernel_status != nullptr) {
+          return kernel_status;
+        }
       } else {
-        ep->initializers_.clear();
+        // Pull potential initializers from the fused-node input view so dropped constants are still
+        // discoverable when ORT has elided them from the compiled subgraph input list.
+        std::vector<Ort::ConstValueInfo> node_inputs = fused_node.GetInputs();
+        if (ep->config_.drop_constant_initializers) {
+          RETURN_IF_ERROR(ep->SaveConstantInitializers(
+              gsl::span<const Ort::ConstValueInfo>{node_inputs.data(), node_inputs.size()}));
+        } else {
+          ep->initializers_.clear();
+        }
+
+        compiled_kernel = telum::CreateCompiledNodeKernel(
+            ep->ort_api, ep->logger_, ep->Backend(),
+            telum::KernelConfig{ep->config_.log_fallbacks, ep->config_.strict_mode},
+            node, ep->initializers_, ep->config_.drop_constant_initializers, kernel_status);
+        if (kernel_status != nullptr) {
+          return kernel_status;
+        }
       }
 
-      compiled_kernel = telum::CreateCompiledNodeKernel(
-          ep->ort_api, ep->logger_, ep->Backend(),
-          telum::KernelConfig{ep->config_.log_fallbacks, ep->config_.strict_mode},
-          node, ep->initializers_, ep->config_.drop_constant_initializers, kernel_status);
-      if (kernel_status != nullptr) {
-        return kernel_status;
+      if (!compiled_kernel) {
+        return ep->ort_api.CreateStatus(ORT_EP_FAIL, "Failed to create compiled Telum kernel");
       }
-    }
 
-    if (!compiled_kernel) {
-      return ep->ort_api.CreateStatus(ORT_EP_FAIL, "Failed to create compiled Telum kernel");
-    }
+      telum::CompiledNodeKernel* kernel_ptr = compiled_kernel.get();
+      ep->compiled_kernels_[fused_node_name] = std::move(compiled_kernel);
 
-    telum::CompiledNodeKernel* kernel_ptr = compiled_kernel.get();
-    ep->compiled_kernels_[fused_node_name] = std::move(compiled_kernel);
+      auto node_compute_info = std::make_unique<TelumNodeComputeInfo>(*ep, kernel_ptr);
+      node_compute_infos[i] = node_compute_info.release();
 
-    auto node_compute_info = std::make_unique<TelumNodeComputeInfo>(*ep, kernel_ptr);
-    node_compute_infos[0] = node_compute_info.release();
-
-    if (!is_ep_context_node && ep->config_.enable_ep_context) {
-      assert(ep_context_nodes != nullptr);
-      RETURN_IF_ERROR(ep->CreateEpContextNodes(gsl::span<const OrtNode*>(fused_nodes, count),
-                                               gsl::span<OrtNode*>(ep_context_nodes, count)));
+      if (!is_ep_context_node && ep->config_.enable_ep_context) {
+        assert(ep_context_nodes != nullptr);
+        const OrtNode* fused_node_ptr = fused_nodes[i];
+        OrtNode* ep_context_node_ptr = nullptr;
+        RETURN_IF_ERROR(ep->CreateEpContextNodes(
+            gsl::span<const OrtNode*>(&fused_node_ptr, 1),
+            gsl::span<OrtNode*>(&ep_context_node_ptr, 1)));
+        ep_context_nodes[i] = ep_context_node_ptr;
+      }
     }
 
     return nullptr;

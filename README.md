@@ -54,11 +54,13 @@ Contributions are welcome through pull requests.
 
 - EP registration name: `TelumPluginExecutionProvider`
 - Static-shape-first partitioning policy with explicit fallback diagnostics and optional strict mode
-- Supported operators (plugin kernel path):
-  - Math: `MatMul`, `Gemm`, `Add`, `Sub`, `Mul`, `Div`, `Min`, `Max`
-  - Activations: `Relu`, `Gelu`, `Tanh`, `Sigmoid`, `Exp`, `Log`, `Sqrt`, `Softmax`
-  - Normalization: `LayerNormalization`
-  - Tensor: `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `ReduceMean`, `Cast`, `Where`, `Expand`, `Concat`, `Gather`, `Slice`
+- Backend-offloaded operators (zDNN path enabled in this branch):
+  - Math: `MatMul` (rank>=2 with stacked/full-broadcast patterns), `Gemm` (rank2, `alpha=1`, `beta=1`), `Add`, `Sub`, `Mul`, `Div`, `Min`, `Max` (equal-shape)
+  - Activations: `Relu`, `Gelu`, `Tanh`, `Sigmoid`, `Exp`, `Log`, `Sqrt`, `Softmax` (axis-last)
+  - Normalization: `LayerNormalization` (axis-last, scale `[C]`, optional bias `[C]`)
+- Plugin CPU-kernel operators (currently not backend-offloaded):
+  - `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `ReduceMean`, `Cast`, `Where`, `Expand`, `Concat`, `Gather`, `Slice`
+- Detailed operator matrix: `reports/parity/operator_coverage.md`
 - EPContext compatibility:
   - EPContext node handling for compiled-model loading paths
   - v2 EPContext serialization format with compatibility path for legacy Mul-only format
@@ -91,6 +93,8 @@ Examples for registration name `TelumPluginExecutionProvider`:
 - `ep.TelumPluginExecutionProvider.verbose_partition_trace` = boolean token
 - `ep.TelumPluginExecutionProvider.enable_fusion` = boolean token
 - `ep.TelumPluginExecutionProvider.drop_constant_initializers` = boolean token
+  - default: `0`
+  - current guard: value `1` is rejected at EP creation (known plugin graph-init crash path)
 - `ep.context_enable` = `0|1`
 
 Legacy aliases (`telum.backend`, `telum.drop_constant_initializers`,
@@ -103,6 +107,9 @@ Validation helpers are included for parity runs and result capture:
 
 - `tools/validation/run_functional_suite.sh`
 - `tools/validation/run_perf_suite.sh`
+- `tools/validation/generate_op_coverage_models.py`
+- `tools/validation/run_op_coverage_suite.sh`
+- `tools/validation/OP_COVERAGE_TESTS.md`
 - report templates under `reports/parity/`
 
 ## Python Packaging Helpers

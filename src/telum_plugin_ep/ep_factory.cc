@@ -19,7 +19,9 @@ constexpr const char* kTelumBackendDefault = "zdnn";
 constexpr const char* kTelumBackendZdnn = "zdnn";
 constexpr const char* kTelumBackendLegacyConfigKey = "telum.backend";
 constexpr const char* kTelumDropConstantInitializersLegacyConfigKey = "telum.drop_constant_initializers";
-constexpr bool kTelumDropConstantInitializersDefault = true;
+// Keep dropped-initializer graph rewriting disabled by default in the plugin path.
+// The current ORT plugin fusion flow can crash for some graphs when this is enabled.
+constexpr bool kTelumDropConstantInitializersDefault = false;
 constexpr const char* kTelumStrictModeLegacyConfigKey = "telum.strict_mode";
 constexpr bool kTelumStrictModeDefault = false;
 constexpr const char* kTelumLogFallbacksLegacyConfigKey = "telum.log_fallbacks";
@@ -360,6 +362,28 @@ OrtStatus* ORT_API_CALL TelumEpFactory::CreateEpImpl(OrtEpFactory* this_ptr,
   config.verbose_partition_trace = verbose_partition_trace;
   config.enable_fusion = enable_fusion;
   config.drop_constant_initializers = drop_constant_initializers;
+
+  // Fail-fast instead of allowing a graph-init segmentation fault when dropped initializers
+  // are requested in the current plugin flow.
+  if (config.drop_constant_initializers) {
+    return factory->ort_api.CreateStatus(
+        ORT_INVALID_ARGUMENT,
+        "Unsupported configuration: "
+        "'ep.TelumPluginExecutionProvider.drop_constant_initializers=1' is temporarily disabled in the "
+        "plugin EP path due to a known graph-initialization crash. Use value 0.");
+  }
+
+  // Fail fast when backend=zdnn is requested but runtime capability is unavailable.
+  {
+    auto backend_probe = CreateTelumBackend(factory->ort_api, TelumBackendConfig{config.backend_kind});
+    if (!backend_probe || !backend_probe->IsRuntimeReady()) {
+      const std::string reason = backend_probe ? backend_probe->RuntimeStatusMessage()
+                                               : std::string("backend creation returned null");
+      const std::string msg = "Telum plugin EP backend initialization failed for backend='" +
+                              config.backend_kind + "': " + reason;
+      return factory->ort_api.CreateStatus(ORT_FAIL, msg.c_str());
+    }
+  }
 
   if (config.enable_ep_context && !config.drop_constant_initializers) {
     return factory->ort_api.CreateStatus(

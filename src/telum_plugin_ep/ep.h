@@ -25,7 +25,7 @@ class TelumEp : public OrtEp, public ApiPtrs {
     bool verbose_partition_trace = false;
     bool enable_fusion = true;
 
-    bool drop_constant_initializers = true;
+    bool drop_constant_initializers = false;
   };
 
   TelumEp(TelumEpFactory& factory, const std::string& name, const Config& config, const OrtLogger& logger);

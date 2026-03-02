@@ -2,7 +2,9 @@ SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
 ORT_REPO ?= https://github.com/microsoft/onnxruntime.git
-ORT_REF ?= main
+# Build against the ORT 1.24 ABI by default so the produced plugin loads into
+# current 1.24.x runtimes. Override ORT_REF as needed for newer ORT builds.
+ORT_REF ?= v1.24.2
 ORT_DIR ?= .ort
 BUILD_DIR ?= build
 ONNXRUNTIME_INCLUDE_DIR ?= $(ORT_DIR)/include/onnxruntime/core/session

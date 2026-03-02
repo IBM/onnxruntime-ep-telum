@@ -150,7 +150,8 @@ Example registration name:
 
 - `ep.TelumPluginExecutionProvider.drop_constant_initializers`
   - Values: boolean tokens
-  - Default: `1`
+  - Default: `0`
+  - Current guard: value `1` is rejected at EP creation due a known plugin graph-initialization crash path
 - Legacy alias: `telum.drop_constant_initializers`
 
 ### EPContext generation
@@ -158,27 +159,55 @@ Example registration name:
 - `ep.context_enable`
   - Values: `0` or `1`
   - Default: `0`
-  - Constraint: if `ep.context_enable=1`, then `drop_constant_initializers` must be enabled
+  - Current limitation: disabled in this branch because `drop_constant_initializers=1` is currently blocked
 
 ## Supported Operators and Partitioning
 
 Partitioning is static-shape-first. Unsupported nodes are left for other execution providers (typically CPU).
 
-- Math:
-  - `MatMul`, `Gemm`
-  - `Add`, `Sub`, `Mul`, `Div`, `Min`, `Max`
-- Activations:
-  - `Relu`, `Gelu`, `Tanh`, `Sigmoid`, `Exp`, `Log`, `Sqrt`, `Softmax`
-- Normalization:
-  - `LayerNormalization`
-- Tensor:
-  - `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `ReduceMean`, `Cast`
-  - `Where`, `Expand`, `Concat`, `Gather`, `Slice`
+Current backend-offloaded scope in this branch:
+
+- `MatMul`
+  - static float tensors
+  - rank >= 2
+  - supported backend patterns:
+    - unstacked
+    - stacked (matching batch dimensions)
+    - fully-unstacked broadcast operand (`bcast1` / `bcast23`)
+- `Gemm`
+  - static float tensors
+  - rank-2 only
+  - `alpha=1`, `beta=1`
+  - `C` input supported as scalar / `[N]` / `[1,N]`
+- `Add`, `Sub`, `Mul`, `Div`, `Min`, `Max`
+  - static float tensors
+  - equal-shape only (broadcast path is not offloaded)
+- `Relu`, `Gelu`, `Tanh`, `Sigmoid`, `Exp`, `Log`, `Sqrt`
+  - static float tensors
+  - backend unary path
+- `Softmax`
+  - static float tensors
+  - axis must be last dimension
+- `LayerNormalization`
+  - static float tensors
+  - axis must be last dimension
+  - scale shape `[C]`
+  - optional bias shape `[C]`
+
+Plugin CPU-kernel operators (not currently backend-offloaded):
+
+- `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `ReduceMean`, `Cast`
+- `Where`, `Expand`, `Concat`, `Gather`, `Slice`
+
+Additional notes:
+
 - EPContext:
   - `EPContext` in domain `com.microsoft` when `source` matches this EP
   - v2 serialized metadata replay path with legacy Mul-format compatibility
 - Custom op sample path:
   - `Custom_Mul` in domain `test`
+- Detailed matrix:
+  - `reports/parity/operator_coverage.md`
 
 ## zDNN Backend Notes
 
@@ -186,7 +215,8 @@ Partitioning is static-shape-first. Unsupported nodes are left for other executi
 - Runtime selection is config-based (`backend=zdnn`)
 - On Linux s390x, the implementation dynamically loads `libzdnn.so`
 - Capability gating is per-op via NNPA/zDNN availability checks
-- If zDNN cannot be loaded, or required NNPA functions are unavailable for an op, that op is not assigned
+- `backend=zdnn` is fail-fast at EP creation if runtime initialization fails
+- If required NNPA functions are unavailable for an op, that op is not assigned
 
 ## Distribution Helper APIs
 
@@ -223,6 +253,31 @@ Set environment variable:
 - `ORT_TELUM_PLUGIN_EP_PROFILE=1`
 
 When enabled, the plugin emits lightweight timing summaries on unload.
+
+## Broader Op-Coverage Harness
+
+For broader coverage beyond the static matmul parity checks, use the matrix-driven op-coverage harness:
+
+- Model generator: `tools/validation/generate_op_coverage_models.py`
+- Matrix definition: `tools/validation/op_coverage_matrix.psv`
+- Matrix runner: `tools/validation/run_op_coverage_suite.sh`
+- Focus notes per test: `tools/validation/OP_COVERAGE_TESTS.md`
+
+The matrix includes backend-offload candidates and plugin CPU-kernel ops, with a focus note for each test.
+
+Example:
+
+```bash
+python3 tools/validation/generate_op_coverage_models.py \
+  --out-dir ~/onnx-proj/bench_models/op_coverage \
+  --seed 42
+
+tools/validation/run_op_coverage_suite.sh \
+  --perf-test ~/onnx-proj/onnxruntime/build/s390x_telum/Release/onnxruntime_perf_test \
+  --model-root ~/onnx-proj/bench_models/op_coverage \
+  --plugin-lib ~/onnx-proj/onnxruntime-ep-telum/build/libtelum_plugin_ep.so \
+  --out reports/parity
+```
 
 ## Common Failure Modes
 

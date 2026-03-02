@@ -30,6 +30,10 @@ size_t GetElementSize(ONNXTensorElementDataType elem_type) {
       return sizeof(bool);
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
       return sizeof(float);
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
+      return sizeof(uint16_t);
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:
+      return sizeof(uint16_t);
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
       return sizeof(int32_t);
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
@@ -37,6 +41,114 @@ size_t GetElementSize(ONNXTensorElementDataType elem_type) {
     default:
       return 0;
   }
+}
+
+bool IsTelumDataTensorType(ONNXTensorElementDataType elem_type) {
+  return elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+         elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 ||
+         elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16;
+}
+
+bool IsSupportedCastType(ONNXTensorElementDataType elem_type) {
+  return elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+         elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 ||
+         elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16 ||
+         elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32 ||
+         elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 ||
+         elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL;
+}
+
+float Float16ToFloat(uint16_t bits) {
+  const uint32_t sign = (static_cast<uint32_t>(bits & 0x8000u) << 16);
+  uint32_t exp = static_cast<uint32_t>((bits >> 10) & 0x1Fu);
+  uint32_t mant = static_cast<uint32_t>(bits & 0x03FFu);
+
+  uint32_t fp32 = 0;
+  if (exp == 0) {
+    if (mant == 0) {
+      fp32 = sign;
+    } else {
+      exp = 1;
+      while ((mant & 0x0400u) == 0) {
+        mant <<= 1;
+        --exp;
+      }
+      mant &= 0x03FFu;
+      const uint32_t exp32 = (exp + (127u - 15u)) << 23;
+      fp32 = sign | exp32 | (mant << 13);
+    }
+  } else if (exp == 0x1Fu) {
+    fp32 = sign | 0x7F800000u | (mant << 13);
+  } else {
+    const uint32_t exp32 = (exp + (127u - 15u)) << 23;
+    fp32 = sign | exp32 | (mant << 13);
+  }
+
+  float out = 0.0f;
+  std::memcpy(&out, &fp32, sizeof(out));
+  return out;
+}
+
+uint16_t FloatToFloat16(float value) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+
+  const uint32_t sign = (bits >> 16) & 0x8000u;
+  uint32_t exp = (bits >> 23) & 0xFFu;
+  uint32_t mant = bits & 0x7FFFFFu;
+
+  if (exp == 0xFFu) {
+    // Preserve Inf/NaN.
+    const uint16_t inf_nan = static_cast<uint16_t>(sign | 0x7C00u | (mant ? 0x0200u : 0));
+    return inf_nan;
+  }
+
+  int32_t half_exp = static_cast<int32_t>(exp) - 127 + 15;
+  if (half_exp <= 0) {
+    if (half_exp < -10) {
+      return static_cast<uint16_t>(sign);
+    }
+    mant |= 0x00800000u;
+    const uint32_t shifted = mant >> static_cast<uint32_t>(1 - half_exp);
+    uint32_t rounded = shifted;
+    if ((shifted & 0x00001000u) != 0) {
+      rounded += 0x00002000u;
+    }
+    return static_cast<uint16_t>(sign | (rounded >> 13));
+  }
+
+  if (half_exp >= 31) {
+    return static_cast<uint16_t>(sign | 0x7C00u);
+  }
+
+  if ((mant & 0x00001000u) != 0) {
+    mant += 0x00002000u;
+    if ((mant & 0x00800000u) != 0) {
+      mant = 0;
+      ++half_exp;
+      if (half_exp >= 31) {
+        return static_cast<uint16_t>(sign | 0x7C00u);
+      }
+    }
+  }
+
+  return static_cast<uint16_t>(sign | (static_cast<uint32_t>(half_exp) << 10) | (mant >> 13));
+}
+
+float BFloat16ToFloat(uint16_t bits) {
+  const uint32_t fp32 = static_cast<uint32_t>(bits) << 16;
+  float out = 0.0f;
+  std::memcpy(&out, &fp32, sizeof(out));
+  return out;
+}
+
+uint16_t FloatToBFloat16(float value) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  // Round-to-nearest-even before truncating low 16 bits.
+  const uint32_t lsb = (bits >> 16) & 1u;
+  bits += 0x7FFFu + lsb;
+  return static_cast<uint16_t>(bits >> 16);
 }
 
 OrtStatus* MakeStatus(const OrtApi& ort_api, OrtErrorCode code, const std::string& msg) {
@@ -150,6 +262,64 @@ struct TensorArg {
   size_t element_count = 0;
   const void* data = nullptr;
 };
+
+bool TryReadAsFloat(const TensorArg& tensor, size_t index, float& value) {
+  if (tensor.data == nullptr || index >= tensor.element_count) {
+    return false;
+  }
+
+  switch (tensor.elem_type) {
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
+      value = reinterpret_cast<const float*>(tensor.data)[index];
+      return true;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
+      value = Float16ToFloat(reinterpret_cast<const uint16_t*>(tensor.data)[index]);
+      return true;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:
+      value = BFloat16ToFloat(reinterpret_cast<const uint16_t*>(tensor.data)[index]);
+      return true;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
+      value = static_cast<float>(reinterpret_cast<const int32_t*>(tensor.data)[index]);
+      return true;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
+      value = static_cast<float>(reinterpret_cast<const int64_t*>(tensor.data)[index]);
+      return true;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
+      value = reinterpret_cast<const bool*>(tensor.data)[index] ? 1.0f : 0.0f;
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool TryWriteFromFloat(void* dst, ONNXTensorElementDataType dst_type, size_t index, float value) {
+  if (dst == nullptr) {
+    return false;
+  }
+
+  switch (dst_type) {
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
+      reinterpret_cast<float*>(dst)[index] = value;
+      return true;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
+      reinterpret_cast<uint16_t*>(dst)[index] = FloatToFloat16(value);
+      return true;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:
+      reinterpret_cast<uint16_t*>(dst)[index] = FloatToBFloat16(value);
+      return true;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
+      reinterpret_cast<int32_t*>(dst)[index] = static_cast<int32_t>(value);
+      return true;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
+      reinterpret_cast<int64_t*>(dst)[index] = static_cast<int64_t>(value);
+      return true;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
+      reinterpret_cast<bool*>(dst)[index] = (value != 0.0f);
+      return true;
+    default:
+      return false;
+  }
+}
 
 bool IsTensorType(ONNXTensorElementDataType type) {
   return type != ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
@@ -511,6 +681,10 @@ class GenericNodeKernel final : public CompiledNodeKernel {
           case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
             arg.data = input.GetTensorData<float>();
             break;
+          case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
+          case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:
+            arg.data = input.GetTensorRawData();
+            break;
           case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
             arg.data = input.GetTensorData<bool>();
             break;
@@ -521,7 +695,7 @@ class GenericNodeKernel final : public CompiledNodeKernel {
             arg.data = input.GetTensorData<int64_t>();
             break;
           default:
-            arg.data = nullptr;
+            arg.data = input.GetTensorRawData();
             break;
         }
 
@@ -598,12 +772,13 @@ class GenericNodeKernel final : public CompiledNodeKernel {
       return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, op_type_ + " input data is null");
     }
 
-    // Fast path for Mul using backend when no broadcast is required.
-    if (op_kind_ == OpKind::kMul && a.shape == out_shape && b.shape == out_shape &&
-        backend_.SupportsOp(telum::OpKind::kMul)) {
-      OrtStatus* st = backend_.Mul(gsl::span<const float>(a_data, *output_elems_opt),
-                                   gsl::span<const float>(b_data, *output_elems_opt),
-                                   gsl::span<float>(y, *output_elems_opt));
+    // Fast path for backend-accelerated binary ops when no broadcast is required.
+    if (a.shape == out_shape && b.shape == out_shape && backend_.SupportsOp(op_kind_)) {
+      OrtStatus* st = backend_.Binary(TelumBinaryRequest{
+          op_kind_,
+          gsl::span<const float>(a_data, *output_elems_opt),
+          gsl::span<const float>(b_data, *output_elems_opt),
+          gsl::span<float>(y, *output_elems_opt)});
       if (st == nullptr) {
         return nullptr;
       }
@@ -705,6 +880,27 @@ class GenericNodeKernel final : public CompiledNodeKernel {
     RETURN_IF_ERROR(AllocateOutput(context, 0, x.shape, output));
     float* y_data = output.GetTensorMutableData<float>();
 
+    if (backend_.SupportsOp(op_kind_)) {
+      OrtStatus* st = backend_.Unary(TelumUnaryRequest{
+          op_kind_,
+          gsl::span<const float>(x_data, x.element_count),
+          gsl::span<float>(y_data, x.element_count)});
+      if (st == nullptr) {
+        return nullptr;
+      }
+
+      Ort::Status backend_status{st};
+      if (!kernel_config_.log_fallbacks) {
+        return backend_status.release();
+      }
+
+      IGNORE_ORTSTATUS(ort_api_.Logger_LogMessage(
+          &logger_, ORT_LOGGING_LEVEL_WARNING,
+          ("Telum EP fallback to CPU path for " + op_type_ + ": " + backend_status.GetErrorMessage()).c_str(),
+          ORT_FILE, __LINE__, __FUNCTION__));
+      // Continue with CPU compute below.
+    }
+
     for (size_t i = 0; i < x.element_count; ++i) {
       const float v = x_data[i];
       float out = 0.0f;
@@ -788,6 +984,35 @@ class GenericNodeKernel final : public CompiledNodeKernel {
     const float* b_data = GetTensorData<float>(b, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
     if (a_data == nullptr || b_data == nullptr) {
       return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "MatMul input data is null");
+    }
+
+    const auto output_elems_opt = TryComputeElementCount(out_shape);
+    if (!output_elems_opt.has_value()) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "MatMul output element count overflow");
+    }
+
+    if (backend_.SupportsOp(OpKind::kMatMul)) {
+      OrtStatus* st = backend_.MatMul(TelumMatMulRequest{
+          gsl::span<const float>(a_data, a.element_count),
+          gsl::span<const float>(b_data, b.element_count),
+          gsl::span<float>(y, *output_elems_opt),
+          gsl::span<const int64_t>(a.shape.data(), a.shape.size()),
+          gsl::span<const int64_t>(b.shape.data(), b.shape.size()),
+          gsl::span<const int64_t>(out_shape.data(), out_shape.size())});
+      if (st == nullptr) {
+        return nullptr;
+      }
+
+      Ort::Status backend_status{st};
+      if (!kernel_config_.log_fallbacks) {
+        return backend_status.release();
+      }
+
+      IGNORE_ORTSTATUS(ort_api_.Logger_LogMessage(
+          &logger_, ORT_LOGGING_LEVEL_WARNING,
+          ("Telum EP fallback to CPU path for MatMul: " + std::string(backend_status.GetErrorMessage())).c_str(),
+          ORT_FILE, __LINE__, __FUNCTION__));
+      // Continue with CPU compute below.
     }
 
     std::vector<int64_t> a_aligned;
@@ -914,7 +1139,43 @@ class GenericNodeKernel final : public CompiledNodeKernel {
         return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Gemm C must be float");
       }
       c_data = GetTensorData<float>(*c, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+      if (c_data == nullptr) {
+        return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Gemm C data is null");
+      }
       c_shape = c->shape;
+    }
+
+    if (backend_.SupportsOp(OpKind::kGemm)) {
+      TelumGemmRequest req{};
+      req.input_a = gsl::span<const float>(a_data, a.element_count);
+      req.input_b = gsl::span<const float>(b_data, b.element_count);
+      req.input_c = c_data == nullptr ? gsl::span<const float>{} : gsl::span<const float>(c_data, c->element_count);
+      req.output = gsl::span<float>(y_data, static_cast<size_t>(m) * static_cast<size_t>(n));
+      req.a_shape = gsl::span<const int64_t>(a.shape.data(), a.shape.size());
+      req.b_shape = gsl::span<const int64_t>(b.shape.data(), b.shape.size());
+      req.c_shape = gsl::span<const int64_t>(c_shape.data(), c_shape.size());
+      req.output_shape = gsl::span<const int64_t>(out_shape.data(), out_shape.size());
+      req.has_c = c != nullptr;
+      req.trans_a = trans_a;
+      req.trans_b = trans_b;
+      req.alpha = attributes_.alpha;
+      req.beta = attributes_.beta;
+
+      OrtStatus* st = backend_.Gemm(req);
+      if (st == nullptr) {
+        return nullptr;
+      }
+
+      Ort::Status backend_status{st};
+      if (!kernel_config_.log_fallbacks) {
+        return backend_status.release();
+      }
+
+      IGNORE_ORTSTATUS(ort_api_.Logger_LogMessage(
+          &logger_, ORT_LOGGING_LEVEL_WARNING,
+          ("Telum EP fallback to CPU path for Gemm: " + std::string(backend_status.GetErrorMessage())).c_str(),
+          ORT_FILE, __LINE__, __FUNCTION__));
+      // Continue with CPU compute below.
     }
 
     const auto get_a = [&](int64_t row, int64_t col) -> float {
@@ -1002,6 +1263,28 @@ class GenericNodeKernel final : public CompiledNodeKernel {
     RETURN_IF_ERROR(AllocateOutput(context, 0, x.shape, output));
     float* y_data = output.GetTensorMutableData<float>();
 
+    if (backend_.SupportsOp(OpKind::kSoftmax)) {
+      OrtStatus* st = backend_.Softmax(TelumSoftmaxRequest{
+          gsl::span<const float>(x_data, x.element_count),
+          gsl::span<float>(y_data, x.element_count),
+          gsl::span<const int64_t>(x.shape.data(), x.shape.size()),
+          attributes_.axis});
+      if (st == nullptr) {
+        return nullptr;
+      }
+
+      Ort::Status backend_status{st};
+      if (!kernel_config_.log_fallbacks) {
+        return backend_status.release();
+      }
+
+      IGNORE_ORTSTATUS(ort_api_.Logger_LogMessage(
+          &logger_, ORT_LOGGING_LEVEL_WARNING,
+          ("Telum EP fallback to CPU path for Softmax: " + std::string(backend_status.GetErrorMessage())).c_str(),
+          ORT_FILE, __LINE__, __FUNCTION__));
+      // Continue with CPU compute below.
+    }
+
     for (size_t o = 0; o < outer; ++o) {
       for (size_t in = 0; in < inner; ++in) {
         const size_t base = o * axis_dim * inner + in;
@@ -1070,6 +1353,41 @@ class GenericNodeKernel final : public CompiledNodeKernel {
     Ort::UnownedValue output;
     RETURN_IF_ERROR(AllocateOutput(context, 0, x.shape, output));
     float* y_data = output.GetTensorMutableData<float>();
+
+    if (backend_.SupportsOp(OpKind::kLayerNormalization)) {
+      const gsl::span<const float> bias_span = bias_data == nullptr
+                                                   ? gsl::span<const float>{}
+                                                   : gsl::span<const float>(bias_data, bias->element_count);
+      const gsl::span<const int64_t> bias_shape_span = bias == nullptr
+                                                           ? gsl::span<const int64_t>{}
+                                                           : gsl::span<const int64_t>(bias->shape.data(), bias->shape.size());
+
+      OrtStatus* st = backend_.LayerNormalization(TelumLayerNormRequest{
+          gsl::span<const float>(x_data, x.element_count),
+          gsl::span<const float>(scale_data, scale.element_count),
+          bias_span,
+          gsl::span<float>(y_data, x.element_count),
+          gsl::span<const int64_t>(x.shape.data(), x.shape.size()),
+          gsl::span<const int64_t>(scale.shape.data(), scale.shape.size()),
+          bias_shape_span,
+          bias != nullptr,
+          attributes_.axis,
+          attributes_.epsilon});
+      if (st == nullptr) {
+        return nullptr;
+      }
+
+      Ort::Status backend_status{st};
+      if (!kernel_config_.log_fallbacks) {
+        return backend_status.release();
+      }
+
+      IGNORE_ORTSTATUS(ort_api_.Logger_LogMessage(
+          &logger_, ORT_LOGGING_LEVEL_WARNING,
+          ("Telum EP fallback to CPU path for LayerNormalization: " + std::string(backend_status.GetErrorMessage())).c_str(),
+          ORT_FILE, __LINE__, __FUNCTION__));
+      // Continue with CPU compute below.
+    }
 
     for (size_t o = 0; o < outer; ++o) {
       const size_t base = o * inner;
@@ -1350,8 +1668,8 @@ class GenericNodeKernel final : public CompiledNodeKernel {
 
     const TensorArg& x = inputs[0];
     RETURN_IF_ERROR(ValidateStaticTensor(ort_api_, x, input_names_[0]));
-    if (x.elem_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "ReduceMean supports float only");
+    if (!IsTelumDataTensorType(x.elem_type)) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "ReduceMean supports float/fp16/bf16 only");
     }
 
     std::vector<int64_t> axes;
@@ -1397,9 +1715,15 @@ class GenericNodeKernel final : public CompiledNodeKernel {
 
     Ort::UnownedValue output;
     RETURN_IF_ERROR(AllocateOutput(context, 0, out_shape, output));
-    float* y_data = output.GetTensorMutableData<float>();
-
-    const float* x_data = GetTensorData<float>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+    void* y_data = output.GetTensorMutableRawData();
+    const auto y_type = output.GetTensorTypeAndShapeInfo().GetElementType();
+    if (y_type != x.elem_type) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT,
+                        "ReduceMean output type must match input type for Telum plugin");
+    }
+    if (x.data == nullptr || y_data == nullptr) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "ReduceMean input/output data is null");
+    }
 
     std::vector<double> sums(*out_count_opt, 0.0);
     std::vector<size_t> counts(*out_count_opt, 0);
@@ -1429,22 +1753,22 @@ class GenericNodeKernel final : public CompiledNodeKernel {
         ++out_axis;
       }
 
-      sums[out_offset] += static_cast<double>(x_data[idx]);
+      float x_value = 0.0f;
+      if (!TryReadAsFloat(x, idx, x_value)) {
+        return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "ReduceMean failed to read input element");
+      }
+      sums[out_offset] += static_cast<double>(x_value);
       counts[out_offset] += 1;
     }
 
     for (size_t i = 0; i < *out_count_opt; ++i) {
-      y_data[i] = counts[i] == 0 ? 0.0f : static_cast<float>(sums[i] / static_cast<double>(counts[i]));
+      const float mean = counts[i] == 0 ? 0.0f : static_cast<float>(sums[i] / static_cast<double>(counts[i]));
+      if (!TryWriteFromFloat(y_data, y_type, i, mean)) {
+        return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "ReduceMean failed to write output element");
+      }
     }
 
     return nullptr;
-  }
-
-  template <typename SrcT, typename DstT>
-  static void ConvertArray(const SrcT* src, DstT* dst, size_t count) {
-    for (size_t i = 0; i < count; ++i) {
-      dst[i] = static_cast<DstT>(src[i]);
-    }
   }
 
   OrtStatus* ComputeCast(Ort::KernelContext& context,
@@ -1464,82 +1788,102 @@ class GenericNodeKernel final : public CompiledNodeKernel {
     if (to_type != out_type) {
       return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Cast output type mismatch with model output");
     }
+    if (!IsSupportedCastType(x.elem_type) || !IsSupportedCastType(to_type)) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Unsupported Cast type combination");
+    }
+    if (x.data == nullptr) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Cast input data is null");
+    }
 
     const size_t count = x.element_count;
-
-    if (x.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT && to_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-      std::memcpy(output.GetTensorMutableData<float>(), x.data, count * sizeof(float));
-      return nullptr;
+    void* dst = output.GetTensorMutableRawData();
+    if (dst == nullptr) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Cast output data is null");
     }
 
-    if (to_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-      float* dst = output.GetTensorMutableData<float>();
-      if (x.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64) {
-        ConvertArray(GetTensorData<int64_t>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64), dst, count);
-        return nullptr;
+    auto write_cast = [&](size_t idx, auto src_value) -> bool {
+      switch (to_type) {
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
+          reinterpret_cast<float*>(dst)[idx] = static_cast<float>(src_value);
+          return true;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
+          reinterpret_cast<uint16_t*>(dst)[idx] = FloatToFloat16(static_cast<float>(src_value));
+          return true;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:
+          reinterpret_cast<uint16_t*>(dst)[idx] = FloatToBFloat16(static_cast<float>(src_value));
+          return true;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
+          reinterpret_cast<int32_t*>(dst)[idx] = static_cast<int32_t>(src_value);
+          return true;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
+          reinterpret_cast<int64_t*>(dst)[idx] = static_cast<int64_t>(src_value);
+          return true;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
+          reinterpret_cast<bool*>(dst)[idx] = static_cast<bool>(src_value);
+          return true;
+        default:
+          return false;
       }
-      if (x.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32) {
-        ConvertArray(GetTensorData<int32_t>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32), dst, count);
-        return nullptr;
-      }
-      if (x.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL) {
-        ConvertArray(GetTensorData<bool>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL), dst, count);
-        return nullptr;
-      }
-    }
+    };
 
-    if (to_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64) {
-      int64_t* dst = output.GetTensorMutableData<int64_t>();
-      if (x.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-        ConvertArray(GetTensorData<float>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT), dst, count);
+    switch (x.elem_type) {
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT: {
+        const float* src = reinterpret_cast<const float*>(x.data);
+        for (size_t i = 0; i < count; ++i) {
+          if (!write_cast(i, src[i])) {
+            return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Unsupported Cast destination type");
+          }
+        }
         return nullptr;
       }
-      if (x.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32) {
-        ConvertArray(GetTensorData<int32_t>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32), dst, count);
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16: {
+        const uint16_t* src = reinterpret_cast<const uint16_t*>(x.data);
+        for (size_t i = 0; i < count; ++i) {
+          if (!write_cast(i, Float16ToFloat(src[i]))) {
+            return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Unsupported Cast destination type");
+          }
+        }
         return nullptr;
       }
-      if (x.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL) {
-        ConvertArray(GetTensorData<bool>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL), dst, count);
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16: {
+        const uint16_t* src = reinterpret_cast<const uint16_t*>(x.data);
+        for (size_t i = 0; i < count; ++i) {
+          if (!write_cast(i, BFloat16ToFloat(src[i]))) {
+            return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Unsupported Cast destination type");
+          }
+        }
         return nullptr;
       }
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32: {
+        const int32_t* src = reinterpret_cast<const int32_t*>(x.data);
+        for (size_t i = 0; i < count; ++i) {
+          if (!write_cast(i, src[i])) {
+            return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Unsupported Cast destination type");
+          }
+        }
+        return nullptr;
+      }
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64: {
+        const int64_t* src = reinterpret_cast<const int64_t*>(x.data);
+        for (size_t i = 0; i < count; ++i) {
+          if (!write_cast(i, src[i])) {
+            return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Unsupported Cast destination type");
+          }
+        }
+        return nullptr;
+      }
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL: {
+        const bool* src = reinterpret_cast<const bool*>(x.data);
+        for (size_t i = 0; i < count; ++i) {
+          if (!write_cast(i, src[i])) {
+            return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Unsupported Cast destination type");
+          }
+        }
+        return nullptr;
+      }
+      default:
+        return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Unsupported Cast source type");
     }
-
-    if (to_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32) {
-      int32_t* dst = output.GetTensorMutableData<int32_t>();
-      if (x.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-        ConvertArray(GetTensorData<float>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT), dst, count);
-        return nullptr;
-      }
-      if (x.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64) {
-        ConvertArray(GetTensorData<int64_t>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64), dst, count);
-        return nullptr;
-      }
-      if (x.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL) {
-        ConvertArray(GetTensorData<bool>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL), dst, count);
-        return nullptr;
-      }
-    }
-
-    if (to_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL) {
-      bool* dst = output.GetTensorMutableData<bool>();
-      if (x.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-        const float* src = GetTensorData<float>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
-        for (size_t i = 0; i < count; ++i) dst[i] = src[i] != 0.0f;
-        return nullptr;
-      }
-      if (x.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64) {
-        const int64_t* src = GetTensorData<int64_t>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
-        for (size_t i = 0; i < count; ++i) dst[i] = src[i] != 0;
-        return nullptr;
-      }
-      if (x.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32) {
-        const int32_t* src = GetTensorData<int32_t>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32);
-        for (size_t i = 0; i < count; ++i) dst[i] = src[i] != 0;
-        return nullptr;
-      }
-    }
-
-    return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Unsupported Cast type combination");
   }
 
   OrtStatus* ComputeWhere(Ort::KernelContext& context,
@@ -1558,8 +1902,11 @@ class GenericNodeKernel final : public CompiledNodeKernel {
     if (cond.elem_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL) {
       return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Where condition must be bool");
     }
-    if (x.elem_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT || y.elem_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Where supports float data tensors only");
+    if (x.elem_type != y.elem_type) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Where inputs X and Y must have the same element type");
+    }
+    if (!IsTelumDataTensorType(x.elem_type)) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Where supports float/fp16/bf16 data tensors only");
     }
 
     std::vector<int64_t> out_shape;
@@ -1575,7 +1922,11 @@ class GenericNodeKernel final : public CompiledNodeKernel {
 
     Ort::UnownedValue output;
     RETURN_IF_ERROR(AllocateOutput(context, 0, out_shape, output));
-    float* out = output.GetTensorMutableData<float>();
+    void* out = output.GetTensorMutableRawData();
+    const size_t elem_size = GetElementSize(x.elem_type);
+    if (elem_size == 0) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Where unsupported element type");
+    }
 
     const size_t out_rank = out_shape.size();
     std::vector<int64_t> cond_dims;
@@ -1597,8 +1948,12 @@ class GenericNodeKernel final : public CompiledNodeKernel {
     }
 
     const bool* cond_data = GetTensorData<bool>(cond, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
-    const float* x_data = GetTensorData<float>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
-    const float* y_data = GetTensorData<float>(y, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+    if (cond_data == nullptr || x.data == nullptr || y.data == nullptr || out == nullptr) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Where input/output data is null");
+    }
+    const uint8_t* x_data = reinterpret_cast<const uint8_t*>(x.data);
+    const uint8_t* y_data = reinterpret_cast<const uint8_t*>(y.data);
+    uint8_t* out_data = reinterpret_cast<uint8_t*>(out);
 
     for (size_t out_idx = 0; out_idx < *out_count_opt; ++out_idx) {
       size_t rem = out_idx;
@@ -1614,7 +1969,8 @@ class GenericNodeKernel final : public CompiledNodeKernel {
         y_off += static_cast<size_t>(coord * y_strides[axis]);
       }
 
-      out[out_idx] = cond_data[c_off] ? x_data[x_off] : y_data[y_off];
+      const uint8_t* src = cond_data[c_off] ? (x_data + x_off * elem_size) : (y_data + y_off * elem_size);
+      std::memcpy(out_data + out_idx * elem_size, src, elem_size);
     }
 
     return nullptr;
@@ -1631,8 +1987,8 @@ class GenericNodeKernel final : public CompiledNodeKernel {
     RETURN_IF_ERROR(ValidateStaticTensor(ort_api_, x, input_names_[0]));
     RETURN_IF_ERROR(ValidateStaticTensor(ort_api_, shape_tensor, input_names_[1]));
 
-    if (x.elem_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Expand supports float only");
+    if (!IsTelumDataTensorType(x.elem_type)) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Expand supports float/fp16/bf16 only");
     }
 
     std::vector<int64_t> target_shape;
@@ -1657,7 +2013,11 @@ class GenericNodeKernel final : public CompiledNodeKernel {
 
     Ort::UnownedValue output;
     RETURN_IF_ERROR(AllocateOutput(context, 0, out_shape, output));
-    float* out = output.GetTensorMutableData<float>();
+    void* out = output.GetTensorMutableRawData();
+    const size_t elem_size = GetElementSize(x.elem_type);
+    if (elem_size == 0) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Expand unsupported element type");
+    }
 
     const size_t out_rank = out_shape.size();
     std::vector<int64_t> x_dims;
@@ -1670,7 +2030,11 @@ class GenericNodeKernel final : public CompiledNodeKernel {
       }
     }
 
-    const float* x_data = GetTensorData<float>(x, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+    if (x.data == nullptr || out == nullptr) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Expand input/output data is null");
+    }
+    const uint8_t* x_data = reinterpret_cast<const uint8_t*>(x.data);
+    uint8_t* out_data = reinterpret_cast<uint8_t*>(out);
 
     for (size_t out_idx = 0; out_idx < *out_count_opt; ++out_idx) {
       size_t rem = out_idx;
@@ -1681,7 +2045,7 @@ class GenericNodeKernel final : public CompiledNodeKernel {
         rem = stride == 0 ? 0 : (rem % static_cast<size_t>(stride));
         x_off += static_cast<size_t>(coord * x_strides[axis]);
       }
-      out[out_idx] = x_data[x_off];
+      std::memcpy(out_data + out_idx * elem_size, x_data + x_off * elem_size, elem_size);
     }
 
     return nullptr;
@@ -1707,8 +2071,8 @@ class GenericNodeKernel final : public CompiledNodeKernel {
 
     const TensorArg& first = *present_inputs[0];
     RETURN_IF_ERROR(ValidateStaticTensor(ort_api_, first, "input0"));
-    if (first.elem_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Concat supports float only");
+    if (!IsTelumDataTensorType(first.elem_type)) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Concat supports float/fp16/bf16 only");
     }
 
     const int64_t axis = NormalizeAxis(attributes_.concat_axis, first.shape.size());
@@ -1736,7 +2100,11 @@ class GenericNodeKernel final : public CompiledNodeKernel {
 
     Ort::UnownedValue output;
     RETURN_IF_ERROR(AllocateOutput(context, 0, out_shape, output));
-    float* out_data = output.GetTensorMutableData<float>();
+    void* out_data = output.GetTensorMutableRawData();
+    const size_t elem_size = GetElementSize(first.elem_type);
+    if (elem_size == 0) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Concat unsupported element type");
+    }
 
     size_t outer = 1;
     size_t inner = 1;
@@ -1751,12 +2119,16 @@ class GenericNodeKernel final : public CompiledNodeKernel {
     for (const TensorArg* input : present_inputs) {
       const size_t axis_dim = static_cast<size_t>(input->shape[static_cast<size_t>(axis)]);
       const size_t block = axis_dim * inner;
-      const float* src = GetTensorData<float>(*input, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+      if (input->data == nullptr || out_data == nullptr) {
+        return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Concat input/output data is null");
+      }
+      const uint8_t* src = reinterpret_cast<const uint8_t*>(input->data);
+      uint8_t* dst = reinterpret_cast<uint8_t*>(out_data);
 
       for (size_t o = 0; o < outer; ++o) {
         const size_t dst_off = (o * static_cast<size_t>(out_shape[static_cast<size_t>(axis)]) + axis_offset) * inner;
         const size_t src_off = o * block;
-        std::memcpy(out_data + dst_off, src + src_off, block * sizeof(float));
+        std::memcpy(dst + dst_off * elem_size, src + src_off * elem_size, block * elem_size);
       }
 
       axis_offset += axis_dim;
@@ -1776,8 +2148,8 @@ class GenericNodeKernel final : public CompiledNodeKernel {
     RETURN_IF_ERROR(ValidateStaticTensor(ort_api_, data, input_names_[0]));
     RETURN_IF_ERROR(ValidateStaticTensor(ort_api_, indices, input_names_[1]));
 
-    if (data.elem_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Gather supports float data only");
+    if (!IsTelumDataTensorType(data.elem_type)) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Gather supports float/fp16/bf16 data only");
     }
 
     if (indices.elem_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32 &&
@@ -1795,7 +2167,11 @@ class GenericNodeKernel final : public CompiledNodeKernel {
 
     Ort::UnownedValue output;
     RETURN_IF_ERROR(AllocateOutput(context, 0, out_shape, output));
-    float* out = output.GetTensorMutableData<float>();
+    void* out = output.GetTensorMutableRawData();
+    const size_t elem_size = GetElementSize(data.elem_type);
+    if (elem_size == 0) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Gather unsupported element type");
+    }
 
     size_t prefix = 1;
     size_t suffix = 1;
@@ -1809,7 +2185,11 @@ class GenericNodeKernel final : public CompiledNodeKernel {
     const int64_t axis_dim = data.shape[axis_us];
     const size_t indices_count = indices.element_count;
 
-    const float* data_ptr = GetTensorData<float>(data, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+    if (data.data == nullptr || out == nullptr) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Gather input/output data is null");
+    }
+    const uint8_t* data_ptr = reinterpret_cast<const uint8_t*>(data.data);
+    uint8_t* out_ptr = reinterpret_cast<uint8_t*>(out);
 
     auto get_index = [&](size_t idx_pos) -> int64_t {
       if (indices.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64) {
@@ -1830,7 +2210,7 @@ class GenericNodeKernel final : public CompiledNodeKernel {
         }
 
         const size_t src_off = (p * static_cast<size_t>(axis_dim) + static_cast<size_t>(idx)) * suffix;
-        std::memcpy(out + out_offset, data_ptr + src_off, suffix * sizeof(float));
+        std::memcpy(out_ptr + out_offset * elem_size, data_ptr + src_off * elem_size, suffix * elem_size);
         out_offset += suffix;
       }
     }
@@ -1851,8 +2231,8 @@ class GenericNodeKernel final : public CompiledNodeKernel {
     RETURN_IF_ERROR(ValidateStaticTensor(ort_api_, starts, input_names_[1]));
     RETURN_IF_ERROR(ValidateStaticTensor(ort_api_, ends, input_names_[2]));
 
-    if (data.elem_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Slice supports float data only");
+    if (!IsTelumDataTensorType(data.elem_type)) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Slice supports float/fp16/bf16 data only");
     }
 
     std::vector<int64_t> starts_vec;
@@ -1942,7 +2322,11 @@ class GenericNodeKernel final : public CompiledNodeKernel {
 
     Ort::UnownedValue output;
     RETURN_IF_ERROR(AllocateOutput(context, 0, out_shape, output));
-    float* out = output.GetTensorMutableData<float>();
+    void* out = output.GetTensorMutableRawData();
+    const size_t elem_size = GetElementSize(data.elem_type);
+    if (elem_size == 0) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Slice unsupported element type");
+    }
 
     const auto out_count_opt = TryComputeElementCount(out_shape);
     if (!out_count_opt.has_value()) {
@@ -1951,7 +2335,11 @@ class GenericNodeKernel final : public CompiledNodeKernel {
 
     const auto in_strides = ComputeContiguousStrides(data.shape);
     const auto out_strides = ComputeContiguousStrides(out_shape);
-    const float* in = GetTensorData<float>(data, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+    if (data.data == nullptr || out == nullptr) {
+      return MakeStatus(ort_api_, ORT_INVALID_ARGUMENT, "Slice input/output data is null");
+    }
+    const uint8_t* in = reinterpret_cast<const uint8_t*>(data.data);
+    uint8_t* out_data = reinterpret_cast<uint8_t*>(out);
 
     for (size_t out_idx = 0; out_idx < *out_count_opt; ++out_idx) {
       size_t rem = out_idx;
@@ -1964,7 +2352,7 @@ class GenericNodeKernel final : public CompiledNodeKernel {
         in_off += static_cast<size_t>(in_coord * in_strides[axis]);
       }
 
-      out[out_idx] = in[in_off];
+      std::memcpy(out_data + out_idx * elem_size, in + in_off * elem_size, elem_size);
     }
 
     return nullptr;
@@ -2185,6 +2573,10 @@ OrtStatus* ConvertConstValueToInitializer(const OrtApi& ort_api,
     switch (initializer.elem_type) {
       case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
         src = value.GetTensorData<float>();
+        break;
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:
+        src = value.GetTensorData<uint16_t>();
         break;
       case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
         src = value.GetTensorData<bool>();
