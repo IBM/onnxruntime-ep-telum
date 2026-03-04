@@ -1,0 +1,18 @@
+id|model|category|expected_path|cpu_runs|telum_runs|focus
+backend_matmul_chain|backend_matmul_chain.onnx|math|backend-zdnn|20|20|Chained MatMul Add Relu flow to exercise multi-op backend acceleration candidate.
+backend_gemm_bias|backend_gemm_bias.onnx|math|backend-zdnn|20|20|Gemm path with fused bias shape to validate Gemm constraints and runtime behavior.
+backend_add_equal|backend_add_equal.onnx|math|backend-zdnn|20|20|Equal-shape binary add fast path for backend elementwise handling.
+backend_tanh_unary|backend_tanh_unary.onnx|activation|backend-zdnn|20|20|Unary activation coverage for backend unary dispatch.
+backend_softmax_last_axis|backend_softmax_last_axis.onnx|activation|backend-zdnn|20|20|Softmax axis-last constraint path validation.
+backend_layernorm_last_axis|backend_layernorm_last_axis.onnx|nn|backend-zdnn|20|20|LayerNormalization axis-last with scale and bias constraints.
+cpu_reshape_static|cpu_reshape_static.onnx|tensor|plugin-cpu|20|20|Static reshape correctness on plugin CPU kernel path.
+cpu_transpose_perm|cpu_transpose_perm.onnx|tensor|plugin-cpu|20|20|Transpose with explicit permutation on plugin CPU kernel path.
+cpu_squeeze_axes|cpu_squeeze_axes.onnx|tensor|plugin-cpu|20|20|Squeeze behavior using axes tensor input form.
+cpu_unsqueeze_axes|cpu_unsqueeze_axes.onnx|tensor|plugin-cpu|20|20|Unsqueeze behavior using axes tensor input form.
+cpu_reduce_mean_axes|cpu_reduce_mean_axes.onnx|tensor|plugin-cpu|20|20|ReduceMean correctness with explicit axes and keepdims behavior.
+cpu_cast_to_fp16|cpu_cast_to_fp16.onnx|tensor|plugin-cpu|20|20|Cast conversion path to float16 output.
+cpu_where_broadcast|cpu_where_broadcast.onnx|tensor|plugin-cpu|20|20|Where broadcast semantics with bool condition initializer.
+cpu_expand_static|cpu_expand_static.onnx|tensor|plugin-cpu|20|20|Expand shape broadcast behavior on plugin CPU kernel path.
+cpu_concat_axis1|cpu_concat_axis1.onnx|tensor|plugin-cpu|20|20|Concat axis handling and non-axis shape compatibility checks.
+cpu_gather_axis1|cpu_gather_axis1.onnx|tensor|plugin-cpu|20|20|Gather indexing semantics with static int64 indices.
+cpu_slice_basic|cpu_slice_basic.onnx|tensor|plugin-cpu|20|20|Slice starts ends axes steps semantics with static integer tensors.

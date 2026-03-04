@@ -47,7 +47,7 @@ if(NOT EXISTS "${GSL_INCLUDE_DIR}/gsl/span")
   message(FATAL_ERROR "GSL_INCLUDE_DIR does not contain gsl/span: ${GSL_INCLUDE_DIR}")
 endif()
 
-file(GLOB TELUM_PLUGIN_EP_SOURCES
+file(GLOB_RECURSE TELUM_PLUGIN_EP_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/telum_plugin_ep/*.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/telum_plugin_ep/*.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/plugin_ep_utils.h"
@@ -86,4 +86,3 @@ else()
     " -DEF:${CMAKE_CURRENT_SOURCE_DIR}/src/telum_plugin_ep/telum_plugin_ep.def"
   )
 endif()
-

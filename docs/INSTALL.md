@@ -54,10 +54,10 @@ What this does:
 - Clones ONNX Runtime into `.ort` (default ref: `main`)
 - Configures CMake with:
   - `ONNXRUNTIME_INCLUDE_DIR=.ort/include/onnxruntime/core/session`
-  - `TELUM_EP_ENABLE_ZDNN=OFF` by default
+  - `TELUM_EP_ENABLE_ZDNN=ON` by default
 - Builds into `build/`
 
-To enable zDNN at compile time:
+To explicitly configure zDNN at compile time:
 
 ```bash
 make build TELUM_EP_ENABLE_ZDNN=ON
@@ -70,7 +70,7 @@ If you already have ONNX Runtime headers:
 ```bash
 cmake -S . -B build -G Ninja \
   -DONNXRUNTIME_INCLUDE_DIR=/path/to/onnxruntime/include/onnxruntime/core/session \
-  -DTELUM_EP_ENABLE_ZDNN=OFF
+  -DTELUM_EP_ENABLE_ZDNN=ON
 cmake --build build --parallel
 ```
 
