@@ -64,7 +64,7 @@ jobs:
             -OutputDirectory dist/nuget
 
       - name: Upload package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nuget-package
           path: dist/nuget/*.nupkg
@@ -88,7 +88,7 @@ jobs:
         uses: NuGet/setup-nuget@v2
 
       - name: Download package artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: nuget-package
           path: dist/nuget
